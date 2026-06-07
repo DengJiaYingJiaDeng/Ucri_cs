@@ -1,0 +1,4 @@
+id,loan_amnt,term,int_rate,installment,grade,sub_grade,emp_length,home_ownership,annual_inc,verification_status,issue_d,purpose,addr_state,dti,delinq_2yrs,fico_range_low,fico_range_high,open_acc,revol_bal,revol_util,total_acc,loan_status,last_pymnt_d,total_pymnt,recoveries
+1,10000,36,10.5,325.0,B,B3,5,RENT,60000,Verified,2013-06,debt_consolidation,CA,15.0,0,680,684,10,15000,45.0,20,Fully Paid,2016-05,10800.0,0
+2,20000,60,14.0,465.0,C,C2,2,MORTGAGE,80000,Not Verified,2014-01,home_improvement,TX,22.0,1,640,644,15,25000,60.0,30,Charged Off,2015-01,5000.0,500
+3,5000,36,8.0,156.0,A,A1,10,OWN,120000,Source Verified,2013-09,credit_card,NY,8.0,0,720,724,8,5000,20.0,12,Fully Paid,2016-08,5200.0,0
