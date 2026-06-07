@@ -51,7 +51,7 @@ class PropensityModel:
     def _build_estimator(self):
         if self.model_type == "logistic":
             self.backend_ = "sklearn_logistic"
-            return LogisticRegression(C=1.0, max_iter=2000, random_state=self.random_state)
+            return LogisticRegression(C=1.0, max_iter=2000, random_state=self.random_state, solver="liblinear")
 
         if self.model_type == "lightgbm":
             if find_spec("lightgbm") is not None:

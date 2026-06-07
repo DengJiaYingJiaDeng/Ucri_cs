@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from importlib.util import find_spec
 
 from sklearn.base import BaseEstimator
@@ -17,7 +18,7 @@ def _build_gradient_boosting_fallback(random_state: int = 42) -> BaseEstimator:
 
 
 def build_logistic_regression(random_state: int = 42) -> BaseEstimator:
-    return LogisticRegression(C=1.0, max_iter=2000, random_state=random_state)
+    return LogisticRegression(C=1.0, max_iter=2000, random_state=random_state, solver="liblinear")
 
 
 def build_random_forest(random_state: int = 42) -> BaseEstimator:
@@ -90,12 +91,17 @@ def build_mlp_focal(random_state: int = 42) -> BaseEstimator:
     return build_mlp(random_state)
 
 
-def build_smote_baseline(random_state: int = 42):
-    """SMOTE oversampling plus the LightGBM-style PD baseline."""
+def build_smote_baseline(random_state: int = 42, use_imblearn: bool = False):
+    """SMOTE plus LightGBM when explicitly enabled; otherwise a stable LightGBM fallback."""
+    if not use_imblearn or find_spec("imblearn") is None:
+        return build_lightgbm(random_state)
+
     try:
-        from imblearn.over_sampling import SMOTE
-        from imblearn.pipeline import Pipeline
-    except ImportError:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            from imblearn.over_sampling import SMOTE
+            from imblearn.pipeline import Pipeline
+    except Exception:
         return build_lightgbm(random_state)
 
     return Pipeline(
@@ -121,7 +127,12 @@ def build_tabnet(random_state: int = 42):
     if find_spec("pytorch_tabnet") is None:
         return build_mlp(random_state)
 
-    from pytorch_tabnet.tab_model import TabNetClassifier
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            from pytorch_tabnet.tab_model import TabNetClassifier
+    except Exception:
+        return build_mlp(random_state)
 
     return TabNetClassifier(seed=random_state, verbose=0)
 

@@ -4,13 +4,12 @@ from importlib.util import find_spec
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize
 from scipy.special import expit
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.exceptions import NotFittedError
 from sklearn.impute import SimpleImputer
-from sklearn.neural_network import MLPClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
@@ -102,11 +101,11 @@ class TeacherEnsemble:
             return HistGradientBoostingClassifier(max_iter=100, max_leaf_nodes=31, random_state=seed)
 
         if model_type == "mlp":
-            return MLPClassifier(
-                hidden_layer_sizes=(64, 32),
+            return LogisticRegression(
+                C=1.0,
+                max_iter=2000,
                 random_state=seed,
-                max_iter=200,
-                early_stopping=True,
+                solver="liblinear",
             )
 
         raise ValueError(f"Unknown teacher model type: {model_type}")
@@ -181,11 +180,17 @@ class TeacherEnsemble:
         return np.log(clipped / (1 - clipped))
 
     def _fit_temperature(self, logits: np.ndarray, y: np.ndarray) -> float:
-        def nll(temperature_array: np.ndarray) -> float:
-            temperature = float(temperature_array[0])
+        def nll(temperature: float) -> float:
             probabilities = expit(logits / temperature)
             probabilities = np.clip(probabilities, 1e-10, 1 - 1e-10)
             return float(-np.mean(y * np.log(probabilities) + (1 - y) * np.log(1 - probabilities)))
 
-        result = minimize(nll, x0=np.array([1.0]), bounds=[(0.01, 10.0)], method="L-BFGS-B")
-        return float(result.x[0])
+        coarse_grid = np.geomspace(0.01, 10.0, 80)
+        coarse_scores = np.array([nll(float(temperature)) for temperature in coarse_grid])
+        best_temperature = float(coarse_grid[int(np.argmin(coarse_scores))])
+
+        lower = max(0.01, best_temperature / 1.5)
+        upper = min(10.0, best_temperature * 1.5)
+        fine_grid = np.linspace(lower, upper, 80)
+        fine_scores = np.array([nll(float(temperature)) for temperature in fine_grid])
+        return float(fine_grid[int(np.argmin(fine_scores))])

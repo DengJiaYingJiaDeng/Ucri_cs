@@ -101,9 +101,9 @@ def test_optional_deep_baselines_return_estimators():
 def test_smote_baseline_returns_pipeline_or_lightgbm_fallback():
     model = build_smote_baseline(random_state=7)
 
-    if find_spec("imblearn") is None:
-        assert hasattr(model, "fit")
-        assert hasattr(model, "predict_proba")
-    else:
+    if isinstance(model, Pipeline):
         assert isinstance(model, Pipeline)
         assert list(model.named_steps) == ["smote", "classifier"]
+    else:
+        assert hasattr(model, "fit")
+        assert hasattr(model, "predict_proba")

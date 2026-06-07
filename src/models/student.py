@@ -4,7 +4,6 @@ from importlib.util import find_spec
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize
 from scipy.special import expit
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import HistGradientBoostingClassifier
@@ -155,6 +154,7 @@ class StudentModel:
                 max_iter=2000,
                 random_state=self.random_state,
                 class_weight=class_weight,
+                solver="liblinear",
             )
 
         raise ValueError(f"Unknown student model type: {self.model_type}")
@@ -278,14 +278,7 @@ class StudentModel:
         raw_probabilities = self._predict_raw_proba(x)
         logits = self._to_logits(raw_probabilities)
 
-        def nll(temperature_array: np.ndarray) -> float:
-            temperature = float(temperature_array[0])
-            probabilities = expit(logits / temperature)
-            probabilities = np.clip(probabilities, 1e-10, 1 - 1e-10)
-            return float(-np.mean(y * np.log(probabilities) + (1 - y) * np.log(1 - probabilities)))
-
-        result = minimize(nll, x0=np.array([1.0]), bounds=[(0.01, 10.0)], method="L-BFGS-B")
-        self.temperature = float(result.x[0])
+        self.temperature = self._fit_temperature(logits, y)
         self.calibrated = True
 
         from src.evaluation.metrics import compute_ece
@@ -329,3 +322,19 @@ class StudentModel:
     def _to_logits(self, probabilities: np.ndarray) -> np.ndarray:
         clipped = np.clip(probabilities, 1e-10, 1 - 1e-10)
         return np.log(clipped / (1 - clipped))
+
+    def _fit_temperature(self, logits: np.ndarray, y: np.ndarray) -> float:
+        def nll(temperature: float) -> float:
+            probabilities = expit(logits / temperature)
+            probabilities = np.clip(probabilities, 1e-10, 1 - 1e-10)
+            return float(-np.mean(y * np.log(probabilities) + (1 - y) * np.log(1 - probabilities)))
+
+        coarse_grid = np.geomspace(0.01, 10.0, 80)
+        coarse_scores = np.array([nll(float(temperature)) for temperature in coarse_grid])
+        best_temperature = float(coarse_grid[int(np.argmin(coarse_scores))])
+
+        lower = max(0.01, best_temperature / 1.5)
+        upper = min(10.0, best_temperature * 1.5)
+        fine_grid = np.linspace(lower, upper, 80)
+        fine_scores = np.array([nll(float(temperature)) for temperature in fine_grid])
+        return float(fine_grid[int(np.argmin(fine_scores))])

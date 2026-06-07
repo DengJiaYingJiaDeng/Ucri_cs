@@ -72,7 +72,7 @@ def compute_calibration_slope_intercept(y_true: np.ndarray, y_pred: np.ndarray) 
     y_pred_clipped = np.clip(y_pred, 1e-6, 1 - 1e-6)
     logit_pred = np.log(y_pred_clipped / (1 - y_pred_clipped))
 
-    model = LogisticRegression(C=1e6, fit_intercept=True, solver="lbfgs")
+    model = LogisticRegression(C=1e6, fit_intercept=True, solver="liblinear")
     model.fit(logit_pred.reshape(-1, 1), y_true)
     slope = float(model.coef_[0][0])
     intercept = float(model.intercept_[0])
