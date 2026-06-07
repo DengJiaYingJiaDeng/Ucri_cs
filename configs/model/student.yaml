@@ -1,0 +1,8 @@
+# @package student
+model_type: lightgbm
+lambda_distill: 0.3
+lambda_calib: 0.01
+lambda_balance: 0.0
+class_weight: balanced
+pos_weight_cap: 20
+post_calibrate: true

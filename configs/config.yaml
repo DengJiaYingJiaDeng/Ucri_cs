@@ -1,0 +1,48 @@
+defaults:
+  - data: lendingclub
+  - model/teacher
+  - model/student
+  - _self_
+
+experiment:
+  name: ucri-cs-main
+  seed: 42
+  protocols: [1, 2, 3, 4, 5, 6, 7, 8]
+
+data:
+  raw_path: data/raw/
+  processed_path: data/processed/
+
+teacher:
+  n_models: 5
+  model_types: ["lightgbm", "catboost", "lightgbm", "catboost", "lightgbm"]
+  calibration_method: temperature
+
+student:
+  model_type: lightgbm
+  lambda_distill: 0.3
+
+pseudo_label:
+  tau_u: 0.5
+  gamma: 2.0
+  tau_grid: [0.1, 0.2, 0.3, 0.4, 0.5]
+  coverage_targets: [0.2, 0.4, 0.6, 0.8]
+
+decision:
+  target_bad_rate: 0.08
+  lgd_values: [0.20, 0.35, 0.45, 0.60, 0.75, 0.90]
+  tau_decision_multipliers: [1.0, 1.25, 1.5]
+
+evaluation:
+  n_seeds: 10
+  ece_bins: 15
+  bootstrap_resamples: 1000
+  seeds: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+
+risk_score:
+  setting: no_riskscore
+  allowed_settings: [no_riskscore, input_riskscore, anchor_riskscore]
+
+class_weight:
+  pos_weight_cap: 20
+  sensitivity_caps: [5, 10, 20, 50]

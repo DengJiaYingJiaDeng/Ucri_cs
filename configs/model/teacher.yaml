@@ -1,0 +1,9 @@
+# @package teacher
+n_models: 5
+model_types: ["lightgbm", "catboost", "lightgbm", "catboost", "lightgbm"]
+calibration_method: temperature
+class_weight: balanced
+pos_weight_cap: 20
+uncertainty:
+  alpha: [0.25, 0.25, 0.25, 0.25]
+  knn_k: 10
