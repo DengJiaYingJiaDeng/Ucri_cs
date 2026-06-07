@@ -39,13 +39,14 @@ class PropensityModel:
             ]
         )
 
-        return ColumnTransformer(
+        preprocessor = ColumnTransformer(
             transformers=[
                 ("numeric", numeric_pipeline, numeric_columns),
                 ("categorical", categorical_pipeline, categorical_columns),
             ],
             remainder="drop",
         )
+        return preprocessor.set_output(transform="pandas")
 
     def _build_estimator(self):
         if self.model_type == "logistic":
@@ -61,6 +62,7 @@ class PropensityModel:
                     n_estimators=100,
                     max_depth=5,
                     random_state=self.random_state,
+                    n_jobs=1,
                     verbose=-1,
                 )
             self.backend_ = "sklearn_hist_gradient_boosting"
@@ -76,6 +78,7 @@ class PropensityModel:
                     depth=5,
                     random_seed=self.random_state,
                     silent=True,
+                    allow_writing_files=False,
                 )
             self.backend_ = "sklearn_hist_gradient_boosting"
             return HistGradientBoostingClassifier(max_iter=100, max_leaf_nodes=31, random_state=self.random_state)

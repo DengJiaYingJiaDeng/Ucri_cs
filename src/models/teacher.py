@@ -63,13 +63,14 @@ class TeacherEnsemble:
             ]
         )
 
-        return ColumnTransformer(
+        preprocessor = ColumnTransformer(
             transformers=[
                 ("numeric", numeric_pipeline, numeric_columns),
                 ("categorical", categorical_pipeline, categorical_columns),
             ],
             remainder="drop",
         )
+        return preprocessor.set_output(transform="pandas")
 
     def _build_estimator(self, model_type: str, seed: int, pos_weight: float):
         if model_type == "lightgbm":
@@ -80,6 +81,7 @@ class TeacherEnsemble:
                     n_estimators=100,
                     max_depth=5,
                     random_state=seed,
+                    n_jobs=1,
                     verbose=-1,
                     scale_pos_weight=pos_weight,
                 )
@@ -95,6 +97,7 @@ class TeacherEnsemble:
                     random_seed=seed,
                     silent=True,
                     scale_pos_weight=pos_weight,
+                    allow_writing_files=False,
                 )
             return HistGradientBoostingClassifier(max_iter=100, max_leaf_nodes=31, random_state=seed)
 
