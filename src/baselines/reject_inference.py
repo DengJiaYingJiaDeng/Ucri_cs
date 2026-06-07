@@ -126,6 +126,167 @@ def ipw_weighted_pd(
     return pd_model
 
 
+def extrapolation_reject_inference(
+    model,
+    X_labeled: pd.DataFrame,
+    y_labeled: np.ndarray,
+    X_unlabeled: pd.DataFrame,
+    quantile: float = 0.05,
+):
+    """Extrapolation baseline that adds highest-risk rejected rows as bad labels."""
+    x_labeled, y_labeled, x_unlabeled = _validate_training_inputs(X_labeled, y_labeled, X_unlabeled)
+    quantile = _validate_quantile(quantile)
+
+    model.fit(x_labeled, y_labeled)
+    probabilities = _predict_positive_probability(model, x_unlabeled)
+    high_risk_threshold = float(np.quantile(probabilities, 1.0 - quantile))
+    high_risk_mask = probabilities >= high_risk_threshold
+    if not high_risk_mask.any():
+        return model
+
+    high_risk_rejected = x_unlabeled.iloc[np.flatnonzero(high_risk_mask)].reset_index(drop=True)
+    x_all = pd.concat([x_labeled, high_risk_rejected], ignore_index=True)
+    y_all = np.concatenate([y_labeled, np.ones(len(high_risk_rejected), dtype=int)])
+    model.fit(x_all, y_all)
+    return model
+
+
+def domain_adversarial_balancing(
+    pd_model,
+    X_accepted: pd.DataFrame,
+    y_accepted: np.ndarray,
+    X_rejected: pd.DataFrame,
+    n_epochs: int = 50,
+):
+    """Simplified domain-adversarial baseline via accepted/rejected reweighting."""
+    x_accepted, y_accepted, x_rejected = _validate_training_inputs(X_accepted, y_accepted, X_rejected)
+    _validate_non_negative_int("n_epochs", n_epochs)
+
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import Pipeline
+
+    x_all = pd.concat([x_accepted, x_rejected], ignore_index=True)
+    domain_labels = np.concatenate(
+        [
+            np.zeros(len(x_accepted), dtype=int),
+            np.ones(len(x_rejected), dtype=int),
+        ]
+    )
+    discriminator = Pipeline(
+        steps=[
+            ("preprocessor", _build_feature_preprocessor(x_all)),
+            ("estimator", LogisticRegression(C=1.0, max_iter=2000, solver="liblinear")),
+        ]
+    )
+    discriminator.fit(x_all, domain_labels)
+
+    rejected_domain_probability = _predict_positive_probability(discriminator, x_accepted)
+    weights = rejected_domain_probability / np.clip(1.0 - rejected_domain_probability, 1e-6, None)
+    weights = np.clip(weights, 0.1, 10.0)
+    _fit_with_optional_sample_weight(pd_model, x_accepted, y_accepted, weights)
+    return pd_model
+
+
+def ssvm_reject_inference(
+    X_labeled: pd.DataFrame,
+    y_labeled: np.ndarray,
+    X_unlabeled: pd.DataFrame,
+    n_neighbors: int = 7,
+    random_state: int = 42,
+):
+    """Semi-supervised SVM baseline using label propagation pseudo-labels."""
+    x_labeled, y_labeled, x_unlabeled = _validate_training_inputs(X_labeled, y_labeled, X_unlabeled)
+    _require_both_classes("y_labeled", y_labeled)
+    x_all = pd.concat([x_labeled, x_unlabeled], ignore_index=True)
+    n_neighbors = _validate_n_neighbors(n_neighbors, max_neighbors=len(x_all) - 1)
+
+    from sklearn.pipeline import Pipeline
+    from sklearn.semi_supervised import LabelPropagation
+    from sklearn.svm import SVC
+
+    preprocessor = _build_feature_preprocessor(x_all)
+    x_processed = preprocessor.fit_transform(x_all)
+    semi_supervised_labels = np.concatenate([y_labeled, np.full(len(x_unlabeled), -1, dtype=int)])
+    label_propagation = LabelPropagation(kernel="knn", n_neighbors=n_neighbors)
+    propagated_labels = label_propagation.fit(x_processed, semi_supervised_labels).transduction_.astype(int)
+    propagated_labels[propagated_labels == -1] = 0
+
+    svm = Pipeline(
+        steps=[
+            ("preprocessor", _build_feature_preprocessor(x_all)),
+            ("estimator", SVC(probability=True, kernel="rbf", random_state=random_state)),
+        ]
+    )
+    svm.fit(x_all, propagated_labels)
+    return svm
+
+
+def mean_teacher_baseline(
+    student_model,
+    teacher_model,
+    X_labeled: pd.DataFrame,
+    y_labeled: np.ndarray,
+    X_unlabeled: pd.DataFrame,
+    n_iterations: int = 5,
+    ema_decay: float = 0.99,
+):
+    """Supplementary Mean Teacher-style tabular baseline.
+
+    Generic sklearn estimators do not expose weights for a true EMA update, so
+    this baseline uses teacher soft targets on rejected rows as the consistency
+    signal and falls back to weighted soft-label expansion when needed.
+    """
+    x_labeled, y_labeled, x_unlabeled = _validate_training_inputs(X_labeled, y_labeled, X_unlabeled)
+    n_iterations = _validate_n_iterations(n_iterations)
+    _validate_ema_decay(ema_decay)
+
+    for _ in range(n_iterations):
+        teacher_probs = _predict_positive_probability(teacher_model, x_unlabeled)
+        try:
+            student_model.fit(x_labeled, y_labeled, x_unlabeled, teacher_probs, lambda_distill=0.5)
+        except TypeError:
+            x_all, y_all, sample_weight = _expand_unlabeled_soft_labels(
+                x_labeled,
+                y_labeled,
+                x_unlabeled,
+                teacher_probs,
+            )
+            sample_weight[len(x_labeled) :] *= 0.5
+            _fit_with_optional_sample_weight(student_model, x_all, y_all, sample_weight)
+    return student_model
+
+
+def noisy_student_baseline(
+    student_model,
+    teacher_model,
+    X_labeled: pd.DataFrame,
+    y_labeled: np.ndarray,
+    X_unlabeled: pd.DataFrame,
+    noise_std: float = 0.05,
+    n_iterations: int = 3,
+    random_state: int = 42,
+):
+    """Supplementary Noisy Student-style tabular baseline."""
+    x_labeled, y_labeled, x_unlabeled = _validate_training_inputs(X_labeled, y_labeled, X_unlabeled)
+    noise_std = _validate_noise_std(noise_std)
+    n_iterations = _validate_n_iterations(n_iterations)
+    rng = np.random.default_rng(random_state)
+
+    for _ in range(n_iterations):
+        teacher_probs = _predict_positive_probability(teacher_model, x_unlabeled)
+        pseudo_labels = (teacher_probs >= 0.5).astype(int)
+        x_noisy = x_unlabeled.copy()
+        numeric_columns = x_noisy.select_dtypes(include=[np.number]).columns
+        if len(numeric_columns):
+            noise = rng.normal(0.0, noise_std, size=x_noisy[numeric_columns].shape)
+            x_noisy.loc[:, numeric_columns] = x_noisy[numeric_columns].to_numpy(dtype=float) + noise
+
+        x_all = pd.concat([x_labeled, x_noisy], ignore_index=True)
+        y_all = np.concatenate([y_labeled, pseudo_labels])
+        student_model.fit(x_all, y_all)
+    return student_model
+
+
 def _validate_training_inputs(
     X_labeled: pd.DataFrame,
     y_labeled: np.ndarray,
@@ -181,12 +342,7 @@ def _validate_n_bins(n_bins: int) -> int:
 
 
 def _validate_n_iterations(n_iterations: int) -> int:
-    if isinstance(n_iterations, bool):
-        raise ValueError("n_iterations must be a non-negative integer.")
-    n_iterations = int(n_iterations)
-    if n_iterations < 0:
-        raise ValueError("n_iterations must be a non-negative integer.")
-    return n_iterations
+    return _validate_non_negative_int("n_iterations", n_iterations)
 
 
 def _validate_positive_eps(eps: float) -> float:
@@ -275,10 +431,101 @@ def _fit_with_optional_sample_weight(model, X: pd.DataFrame, y: np.ndarray, samp
         model.fit(X, y)
 
 
+def _validate_quantile(quantile: float) -> float:
+    quantile = float(quantile)
+    if not np.isfinite(quantile) or quantile <= 0.0 or quantile > 1.0:
+        raise ValueError("quantile must be in (0, 1].")
+    return quantile
+
+
+def _validate_non_negative_int(name: str, value: int) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a non-negative integer.")
+    value = int(value)
+    if value < 0:
+        raise ValueError(f"{name} must be a non-negative integer.")
+    return value
+
+
+def _validate_n_neighbors(n_neighbors: int, max_neighbors: int) -> int:
+    if isinstance(n_neighbors, bool):
+        raise ValueError("n_neighbors must be a positive integer.")
+    n_neighbors = int(n_neighbors)
+    if n_neighbors < 1:
+        raise ValueError("n_neighbors must be a positive integer.")
+    return min(n_neighbors, max_neighbors)
+
+
+def _validate_noise_std(noise_std: float) -> float:
+    noise_std = float(noise_std)
+    if not np.isfinite(noise_std) or noise_std < 0.0:
+        raise ValueError("noise_std must be non-negative.")
+    return noise_std
+
+
+def _validate_ema_decay(ema_decay: float) -> float:
+    ema_decay = float(ema_decay)
+    if not np.isfinite(ema_decay) or ema_decay < 0.0 or ema_decay > 1.0:
+        raise ValueError("ema_decay must be in [0, 1].")
+    return ema_decay
+
+
+def _require_both_classes(name: str, values: np.ndarray) -> None:
+    if len(np.unique(values)) != 2:
+        raise ValueError(f"{name} must contain both classes.")
+
+
+def _build_feature_preprocessor(X: pd.DataFrame):
+    from sklearn.compose import ColumnTransformer
+    from sklearn.impute import SimpleImputer
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+    X = pd.DataFrame(X)
+    numeric_columns = X.select_dtypes(include=[np.number]).columns.tolist()
+    categorical_columns = [column for column in X.columns if column not in numeric_columns]
+    transformers = []
+
+    if numeric_columns:
+        transformers.append(
+            (
+                "numeric",
+                Pipeline(
+                    steps=[
+                        ("imputer", SimpleImputer(strategy="median")),
+                        ("scaler", StandardScaler()),
+                    ]
+                ),
+                numeric_columns,
+            )
+        )
+    if categorical_columns:
+        transformers.append(
+            (
+                "categorical",
+                Pipeline(
+                    steps=[
+                        ("imputer", SimpleImputer(strategy="constant", fill_value="missing")),
+                        ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
+                    ]
+                ),
+                categorical_columns,
+            )
+        )
+    if not transformers:
+        raise ValueError("Feature frame must contain at least one column.")
+    return ColumnTransformer(transformers=transformers, remainder="drop")
+
+
 REJECT_INFERENCE_BASELINES = {
     "hard": hard_augmentation,
     "fuzzy": fuzzy_augmentation,
     "parceling": parceling,
     "self_training": self_training,
     "ipw": ipw_weighted_pd,
+    "extrapolation": extrapolation_reject_inference,
+    "domain_adversarial": domain_adversarial_balancing,
+    "ssvm": ssvm_reject_inference,
+    "mean_teacher": mean_teacher_baseline,
+    "noisy_student": noisy_student_baseline,
 }

@@ -4,11 +4,16 @@ import pytest
 
 from src.baselines.reject_inference import (
     REJECT_INFERENCE_BASELINES,
+    domain_adversarial_balancing,
+    extrapolation_reject_inference,
     fuzzy_augmentation,
     hard_augmentation,
+    mean_teacher_baseline,
+    noisy_student_baseline,
     ipw_weighted_pd,
     parceling,
     self_training,
+    ssvm_reject_inference,
 )
 
 
@@ -67,8 +72,19 @@ def reject_data():
     return x_labeled, y_labeled, x_unlabeled
 
 
-def test_reject_inference_registry_contains_task17_baselines():
-    expected = {"hard", "fuzzy", "parceling", "self_training", "ipw"}
+def test_reject_inference_registry_contains_task17_and_task26_baselines():
+    expected = {
+        "hard",
+        "fuzzy",
+        "parceling",
+        "self_training",
+        "ipw",
+        "extrapolation",
+        "domain_adversarial",
+        "ssvm",
+        "mean_teacher",
+        "noisy_student",
+    }
 
     assert expected.issubset(REJECT_INFERENCE_BASELINES)
     assert all(callable(builder) for builder in REJECT_INFERENCE_BASELINES.values())
@@ -160,6 +176,88 @@ def test_ipw_weighted_pd_accepts_sklearn_two_column_propensity(reject_data):
     assert np.allclose(pd_model.fit_calls[-1]["sample_weight"], 1.0 / accepted_probabilities)
 
 
+def test_extrapolation_adds_highest_risk_rejected_as_bad_labels(reject_data):
+    x_labeled, y_labeled, x_unlabeled = reject_data
+    model = RecordingModel(probability_batches=[np.array([0.1, 0.95, 0.7])])
+
+    result = extrapolation_reject_inference(model, x_labeled, y_labeled, x_unlabeled, quantile=1 / 3)
+
+    assert result is model
+    assert len(model.fit_calls) == 2
+    augmented = model.fit_calls[-1]
+    assert len(augmented["X"]) == len(x_labeled) + 1
+    assert augmented["y"].tolist() == [0, 0, 1, 1, 1]
+    assert augmented["X"].iloc[-1]["loan_amount"] == 18000
+
+
+def test_domain_adversarial_balancing_fits_pd_model_with_domain_weights(reject_data):
+    x_labeled, y_labeled, x_unlabeled = reject_data
+    x_labeled = x_labeled.copy()
+    x_unlabeled = x_unlabeled.copy()
+    x_labeled["state"] = ["CA", "CA", "NY", "NY"]
+    x_unlabeled["state"] = ["TX", "TX", "CA"]
+    pd_model = RecordingModel()
+
+    result = domain_adversarial_balancing(pd_model, x_labeled, y_labeled, x_unlabeled)
+
+    assert result is pd_model
+    weights = pd_model.fit_calls[-1]["sample_weight"]
+    assert weights.shape == (len(x_labeled),)
+    assert np.all(np.isfinite(weights))
+    assert np.all((weights >= 0.1) & (weights <= 10.0))
+
+
+def test_ssvm_reject_inference_returns_predict_proba_model(reject_data):
+    x_labeled, y_labeled, x_unlabeled = reject_data
+    x_labeled = x_labeled.copy()
+    x_unlabeled = x_unlabeled.copy()
+    x_labeled["state"] = ["CA", "CA", "NY", "NY"]
+    x_unlabeled["state"] = ["CA", "NY", "TX"]
+
+    model = ssvm_reject_inference(x_labeled, y_labeled, x_unlabeled, n_neighbors=2)
+    probabilities = model.predict_proba(x_unlabeled)[:, 1]
+
+    assert probabilities.shape == (len(x_unlabeled),)
+    assert np.all((probabilities >= 0.0) & (probabilities <= 1.0))
+
+
+def test_mean_teacher_baseline_uses_soft_teacher_targets_when_student_has_sklearn_fit(reject_data):
+    x_labeled, y_labeled, x_unlabeled = reject_data
+    teacher = RecordingModel(probability_batches=[np.array([0.2, 0.8, 0.6])])
+    student = RecordingModel()
+
+    result = mean_teacher_baseline(student, teacher, x_labeled, y_labeled, x_unlabeled, n_iterations=1)
+
+    assert result is student
+    augmented = student.fit_calls[-1]
+    assert len(augmented["X"]) == len(x_labeled) + 2 * len(x_unlabeled)
+    assert augmented["y"].tolist() == [0, 0, 1, 1, 0, 0, 0, 1, 1, 1]
+    assert np.allclose(augmented["sample_weight"][: len(x_labeled)], 1.0)
+    assert np.allclose(augmented["sample_weight"][len(x_labeled) : len(x_labeled) + len(x_unlabeled)], [0.4, 0.1, 0.2])
+    assert np.allclose(augmented["sample_weight"][-len(x_unlabeled) :], [0.1, 0.4, 0.3])
+
+
+def test_noisy_student_baseline_adds_teacher_hard_pseudo_labels(reject_data):
+    x_labeled, y_labeled, x_unlabeled = reject_data
+    teacher = RecordingModel(probability_batches=[np.array([0.2, 0.8, 0.6])])
+    student = RecordingModel()
+
+    result = noisy_student_baseline(
+        student,
+        teacher,
+        x_labeled,
+        y_labeled,
+        x_unlabeled,
+        noise_std=0.0,
+        n_iterations=1,
+    )
+
+    assert result is student
+    augmented = student.fit_calls[-1]
+    assert len(augmented["X"]) == len(x_labeled) + len(x_unlabeled)
+    assert augmented["y"].tolist() == [0, 0, 1, 1, 0, 1, 1]
+
+
 def test_reject_inference_baselines_validate_inputs(reject_data):
     x_labeled, y_labeled, x_unlabeled = reject_data
     model = RecordingModel(probability_batches=[np.array([0.2, 0.7, 0.5])])
@@ -178,3 +276,18 @@ def test_reject_inference_baselines_validate_inputs(reject_data):
 
     with pytest.raises(ValueError, match="eps"):
         ipw_weighted_pd(RecordingPropensity(np.ones(len(x_labeled))), model, x_labeled, y_labeled, eps=0)
+
+    with pytest.raises(ValueError, match="quantile"):
+        extrapolation_reject_inference(model, x_labeled, y_labeled, x_unlabeled, quantile=0)
+
+    with pytest.raises(ValueError, match="n_epochs"):
+        domain_adversarial_balancing(model, x_labeled, y_labeled, x_unlabeled, n_epochs=-1)
+
+    with pytest.raises(ValueError, match="both classes"):
+        ssvm_reject_inference(x_labeled, np.zeros(len(y_labeled), dtype=int), x_unlabeled)
+
+    with pytest.raises(ValueError, match="ema_decay"):
+        mean_teacher_baseline(model, model, x_labeled, y_labeled, x_unlabeled, ema_decay=1.5)
+
+    with pytest.raises(ValueError, match="noise_std"):
+        noisy_student_baseline(model, model, x_labeled, y_labeled, x_unlabeled, noise_std=-0.1)
