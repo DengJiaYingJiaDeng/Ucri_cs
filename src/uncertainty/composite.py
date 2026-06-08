@@ -13,6 +13,7 @@ class CompositeUncertainty:
     """Quantile-normalized four-component uncertainty score."""
 
     COMPONENT_KEYS = ("variance", "entropy", "margin", "distance")
+    REFERENCE_DISTANCE_SAMPLE_SIZE = 2_000
 
     def __init__(self, alpha: tuple[float, float, float, float] = (0.25, 0.25, 0.25, 0.25)):
         self.alpha = self._validate_alpha(alpha)
@@ -174,12 +175,24 @@ class CompositeUncertainty:
 
         from src.uncertainty.distance import compute_knn_distance_uncertainty
 
-        self._ref_train_distances = compute_knn_distance_uncertainty(X_train, X_train, k=10)
+        reference_frame = self._sample_reference_frame(X_train)
+        self._ref_train_distances = compute_knn_distance_uncertainty(
+            reference_frame,
+            reference_frame,
+            k=10,
+            max_reference_rows=None,
+        )
         self._ref_train_signature = signature
 
     def _training_signature(self, X_train: pd.DataFrame) -> tuple[tuple[str, ...], int]:
         frame = pd.DataFrame(X_train)
         return tuple(frame.columns), len(frame)
+
+    def _sample_reference_frame(self, X_train: pd.DataFrame) -> pd.DataFrame:
+        frame = pd.DataFrame(X_train).copy()
+        if len(frame) <= self.REFERENCE_DISTANCE_SAMPLE_SIZE:
+            return frame.reset_index(drop=True)
+        return frame.sample(n=self.REFERENCE_DISTANCE_SAMPLE_SIZE, random_state=42).reset_index(drop=True)
 
     def _project_to_simplex(self, values: np.ndarray) -> np.ndarray:
         weights = np.nan_to_num(np.asarray(values, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)

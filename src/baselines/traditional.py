@@ -87,7 +87,7 @@ def build_mlp(random_state: int = 42) -> BaseEstimator:
 
 
 def build_mlp_focal(random_state: int = 42) -> BaseEstimator:
-    """Proxy for the supplementary MLP-focal baseline in the project spec."""
+    """Return a standard sklearn MLP proxy, not a true focal-loss implementation."""
     return build_mlp(random_state)
 
 
@@ -113,7 +113,7 @@ def build_smote_baseline(random_state: int = 42, use_imblearn: bool = False):
 
 
 def build_ft_transformer(random_state: int = 42):
-    """Sklearn proxy for the optional FT-Transformer tabular baseline."""
+    """Return an sklearn MLP proxy, not a true FT-Transformer implementation."""
     return MLPClassifier(
         hidden_layer_sizes=(256, 128, 64),
         random_state=random_state,
@@ -138,7 +138,7 @@ def build_tabnet(random_state: int = 42):
 
 
 def build_saint(random_state: int = 42):
-    """MLP proxy for the optional SAINT tabular baseline."""
+    """Return an sklearn MLP proxy, not a true SAINT implementation."""
     return build_ft_transformer(random_state)
 
 
@@ -158,3 +158,23 @@ TRADITIONAL_BASELINES = {
 
 SUPPLEMENTARY_BASELINES = {"MLP-Focal", "LightGBM-SMOTE"}
 DEEP_TABULAR_BASELINES = {"FT-Transformer", "TabNet", "SAINT"}
+
+BASELINE_IMPLEMENTATION_NOTES = {
+    "LogisticRegression": "Native sklearn logistic regression implementation.",
+    "RandomForest": "Native sklearn random forest implementation.",
+    "XGBoost": "Uses XGBClassifier when xgboost is installed; otherwise a sklearn gradient boosting fallback.",
+    "LightGBM": "Uses LGBMClassifier when lightgbm is installed; otherwise a sklearn gradient boosting fallback.",
+    "CatBoost": "Uses CatBoostClassifier when catboost is installed; otherwise a sklearn gradient boosting fallback.",
+    "MLP": "Native sklearn MLPClassifier implementation.",
+    "FT-Transformer": "Proxy baseline: sklearn MLPClassifier is used until a real FT-Transformer backend is added.",
+    "TabNet": "Uses pytorch-tabnet when installed; otherwise a proxy sklearn MLPClassifier is used.",
+    "SAINT": "Proxy baseline: sklearn MLPClassifier is used until a real SAINT backend is added.",
+    "MLP-Focal": "Proxy baseline: standard sklearn MLPClassifier is used; focal loss is not implemented.",
+    "LightGBM-SMOTE": "Uses imbalanced-learn SMOTE plus LightGBM only when explicitly enabled and available.",
+}
+
+
+def describe_baseline(name: str) -> str:
+    if name not in TRADITIONAL_BASELINES:
+        raise ValueError(f"Unknown traditional baseline: {name}")
+    return BASELINE_IMPLEMENTATION_NOTES[name]

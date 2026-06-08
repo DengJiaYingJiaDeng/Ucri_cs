@@ -4,7 +4,6 @@ from importlib.util import find_spec
 
 import numpy as np
 import pandas as pd
-from scipy.special import expit
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.exceptions import NotFittedError
@@ -13,6 +12,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, StandardScaler
 
+from src.calibration.temperature import apply_temperature, fit_temperature
 from src.data.encoding import CategoricalStringifier
 from src.models.device import catboost_device_params, lightgbm_device_params, validate_device_type, validate_gpu_device_id
 from src.models.sklearn_compat import predict_proba_silencing_lightgbm_feature_name_warning
@@ -206,24 +206,11 @@ class TeacherEnsemble:
         if not self.calibrated:
             return probabilities
         logits = self._to_logits(probabilities)
-        return expit(logits / self.temperature)
+        return apply_temperature(logits, self.temperature)
 
     def _to_logits(self, probabilities: np.ndarray) -> np.ndarray:
         clipped = np.clip(probabilities, 1e-10, 1 - 1e-10)
         return np.log(clipped / (1 - clipped))
 
     def _fit_temperature(self, logits: np.ndarray, y: np.ndarray) -> float:
-        def nll(temperature: float) -> float:
-            probabilities = expit(logits / temperature)
-            probabilities = np.clip(probabilities, 1e-10, 1 - 1e-10)
-            return float(-np.mean(y * np.log(probabilities) + (1 - y) * np.log(1 - probabilities)))
-
-        coarse_grid = np.geomspace(0.01, 10.0, 80)
-        coarse_scores = np.array([nll(float(temperature)) for temperature in coarse_grid])
-        best_temperature = float(coarse_grid[int(np.argmin(coarse_scores))])
-
-        lower = max(0.01, best_temperature / 1.5)
-        upper = min(10.0, best_temperature * 1.5)
-        fine_grid = np.linspace(lower, upper, 80)
-        fine_scores = np.array([nll(float(temperature)) for temperature in fine_grid])
-        return float(fine_grid[int(np.argmin(fine_scores))])
+        return fit_temperature(logits, y)

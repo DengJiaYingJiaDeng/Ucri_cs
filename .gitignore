@@ -1,3 +1,13 @@
-  
-*.csv  
-data/raw/ 
+*.csv
+data/raw/
+outputs/
+catboost_info/
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.pytest_tmp*/
+.coverage
+htmlcov/
+
+.idea/

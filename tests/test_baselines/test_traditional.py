@@ -8,6 +8,7 @@ from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.pipeline import Pipeline
 
 from src.baselines.traditional import (
+    BASELINE_IMPLEMENTATION_NOTES,
     DEEP_TABULAR_BASELINES,
     SUPPLEMENTARY_BASELINES,
     TRADITIONAL_BASELINES,
@@ -21,6 +22,7 @@ from src.baselines.traditional import (
     build_smote_baseline,
     build_tabnet,
     build_xgboost,
+    describe_baseline,
 )
 
 
@@ -96,6 +98,18 @@ def test_optional_deep_baselines_return_estimators():
 
     for builder in builders:
         assert isinstance(builder(random_state=7), BaseEstimator)
+
+
+def test_proxy_baselines_are_explicitly_documented():
+    proxy_names = {"MLP-Focal", "FT-Transformer", "SAINT", "TabNet"}
+
+    assert proxy_names.issubset(BASELINE_IMPLEMENTATION_NOTES)
+    for name in proxy_names:
+        assert "proxy" in describe_baseline(name).lower()
+
+    assert "focal loss is not implemented" in describe_baseline("MLP-Focal")
+    with pytest.raises(ValueError, match="Unknown traditional baseline"):
+        describe_baseline("UnknownModel")
 
 
 def test_smote_baseline_returns_pipeline_or_lightgbm_fallback():
