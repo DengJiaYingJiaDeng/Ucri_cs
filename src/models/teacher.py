@@ -11,7 +11,11 @@ from sklearn.exceptions import NotFittedError
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, StandardScaler
+
+from src.data.encoding import CategoricalStringifier
+from src.models.device import catboost_device_params, lightgbm_device_params, validate_device_type, validate_gpu_device_id
+from src.models.sklearn_compat import predict_proba_silencing_lightgbm_feature_name_warning
 
 
 class TeacherEnsemble:
@@ -24,6 +28,8 @@ class TeacherEnsemble:
         random_state: int = 42,
         class_weight: str = "balanced",
         scale_pos_weight: float | None = None,
+        device_type: str = "cpu",
+        gpu_device_id: int = 0,
     ):
         self.n_models = n_models
         default_model_cycle = ["lightgbm", "catboost", "mlp"]
@@ -33,6 +39,8 @@ class TeacherEnsemble:
         self.random_state = random_state
         self.class_weight = class_weight
         self.scale_pos_weight = scale_pos_weight
+        self.device_type = validate_device_type(device_type)
+        self.gpu_device_id = validate_gpu_device_id(gpu_device_id)
         self.models: list[Pipeline] = []
         self.temperature = 1.0
         self.calibrated = False
@@ -45,7 +53,7 @@ class TeacherEnsemble:
             return 1.0
         return min(n_negative / n_positive, 20.0)
 
-    def _build_preprocessor(self, x: pd.DataFrame) -> ColumnTransformer:
+    def _build_preprocessor(self, x: pd.DataFrame, model_type: str) -> ColumnTransformer:
         numeric_columns = x.select_dtypes(include=[np.number]).columns.tolist()
         categorical_columns = [column for column in x.columns if column not in numeric_columns]
 
@@ -55,21 +63,39 @@ class TeacherEnsemble:
                 ("scaler", StandardScaler()),
             ]
         )
-        categorical_pipeline = Pipeline(
-            steps=[
-                ("imputer", SimpleImputer(strategy="constant", fill_value="missing")),
-                ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
-            ]
-        )
+        if self._use_ordinal_categories(model_type):
+            categorical_pipeline = Pipeline(
+                steps=[
+                    ("stringifier", CategoricalStringifier()),
+                    (
+                        "ordinal",
+                        OrdinalEncoder(
+                            handle_unknown="use_encoded_value",
+                            unknown_value=-1,
+                            encoded_missing_value=-1,
+                        ),
+                    ),
+                ]
+            )
+        else:
+            categorical_pipeline = Pipeline(
+                steps=[
+                    ("stringifier", CategoricalStringifier()),
+                    ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=True)),
+                ]
+            )
 
-        preprocessor = ColumnTransformer(
+        return ColumnTransformer(
             transformers=[
                 ("numeric", numeric_pipeline, numeric_columns),
                 ("categorical", categorical_pipeline, categorical_columns),
             ],
             remainder="drop",
+            sparse_threshold=1.0,
         )
-        return preprocessor.set_output(transform="pandas")
+
+    def _use_ordinal_categories(self, model_type: str) -> bool:
+        return model_type == "catboost" or (model_type == "lightgbm" and find_spec("lightgbm") is None)
 
     def _build_estimator(self, model_type: str, seed: int, pos_weight: float):
         if model_type == "lightgbm":
@@ -83,6 +109,7 @@ class TeacherEnsemble:
                     n_jobs=1,
                     verbose=-1,
                     scale_pos_weight=pos_weight,
+                    **lightgbm_device_params(self.device_type, self.gpu_device_id),
                 )
             return HistGradientBoostingClassifier(max_iter=100, max_leaf_nodes=31, random_state=seed)
 
@@ -97,6 +124,7 @@ class TeacherEnsemble:
                     silent=True,
                     scale_pos_weight=pos_weight,
                     allow_writing_files=False,
+                    **catboost_device_params(self.device_type, self.gpu_device_id),
                 )
             return HistGradientBoostingClassifier(max_iter=100, max_leaf_nodes=31, random_state=seed)
 
@@ -125,7 +153,7 @@ class TeacherEnsemble:
             seed = self.random_state + index
             model = Pipeline(
                 steps=[
-                    ("preprocessor", self._build_preprocessor(x)),
+                    ("preprocessor", self._build_preprocessor(x, model_type)),
                     ("estimator", self._build_estimator(model_type, seed, pos_weight)),
                 ]
             )
@@ -140,7 +168,12 @@ class TeacherEnsemble:
     def predict_individual(self, x: pd.DataFrame) -> np.ndarray:
         if not self.models:
             raise NotFittedError("TeacherEnsemble must be fitted before predicting.")
-        return np.column_stack([model.predict_proba(pd.DataFrame(x))[:, 1] for model in self.models])
+        return np.column_stack(
+            [
+                predict_proba_silencing_lightgbm_feature_name_warning(model, pd.DataFrame(x))[:, 1]
+                for model in self.models
+            ]
+        )
 
     def predict_proba(self, x: pd.DataFrame) -> np.ndarray:
         return self.predict_individual(x).mean(axis=1)

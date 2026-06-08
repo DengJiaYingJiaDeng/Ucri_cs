@@ -55,7 +55,6 @@ REJECTED_FEATURE_MAPPING = {
     "Application Date": "application_date",
     "Loan Title": "loan_purpose",
     "Zip Code": "zip3",
-    "Policy Code": "policy_code",
 }
 
 RISK_SCORE_SETTINGS = ["no_riskscore", "input_riskscore", "anchor_riskscore"]
@@ -146,6 +145,8 @@ def build_shared_features(
 
     rejected_shared = pd.DataFrame(index=rejected.index)
     for source_column, target_column in REJECTED_FEATURE_MAPPING.items():
+        if risk_score_setting == "no_riskscore" and target_column == "risk_score":
+            continue
         if source_column in rejected.columns:
             rejected_shared[target_column] = rejected[source_column]
     rejected_shared["source"] = "rejected"
@@ -153,9 +154,7 @@ def build_shared_features(
 
     combined = pd.concat([accepted_shared, rejected_shared], ignore_index=True)
 
-    if risk_score_setting == "no_riskscore":
-        combined = combined.drop(columns=["risk_score"], errors="ignore")
-    elif risk_score_setting == "anchor_riskscore":
+    if risk_score_setting == "anchor_riskscore" and "risk_score" in combined.columns:
         combined["risk_score_anchor"] = combined["risk_score"]
         combined = combined.drop(columns=["risk_score"], errors="ignore")
 

@@ -481,6 +481,8 @@ def _build_feature_preprocessor(X: pd.DataFrame):
     from sklearn.pipeline import Pipeline
     from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
+    from src.data.encoding import CategoricalStringifier
+
     X = pd.DataFrame(X)
     numeric_columns = X.select_dtypes(include=[np.number]).columns.tolist()
     categorical_columns = [column for column in X.columns if column not in numeric_columns]
@@ -505,7 +507,7 @@ def _build_feature_preprocessor(X: pd.DataFrame):
                 "categorical",
                 Pipeline(
                     steps=[
-                        ("imputer", SimpleImputer(strategy="constant", fill_value="missing")),
+                        ("stringifier", CategoricalStringifier()),
                         ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
                     ]
                 ),

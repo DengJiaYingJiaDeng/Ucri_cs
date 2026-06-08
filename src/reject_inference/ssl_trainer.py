@@ -21,6 +21,8 @@ class UCRITrainer:
         gamma: float = 2.0,
         lambda_distill: float = 0.3,
         random_state: int = 42,
+        device_type: str = "cpu",
+        gpu_device_id: int = 0,
     ):
         self.teacher_config = dict(teacher_config or {"n_models": 5})
         self.student_model_type = student_model_type
@@ -28,6 +30,8 @@ class UCRITrainer:
         self.gamma = gamma
         self.lambda_distill = self._validate_non_negative("lambda_distill", lambda_distill)
         self.random_state = random_state
+        self.device_type = device_type
+        self.gpu_device_id = gpu_device_id
 
         self.teacher = self._make_teacher()
         self.student = self._make_student()
@@ -141,10 +145,17 @@ class UCRITrainer:
             random_state=config.get("random_state", self.random_state + seed_offset),
             class_weight=config.get("class_weight", "balanced"),
             scale_pos_weight=config.get("scale_pos_weight"),
+            device_type=config.get("device_type", self.device_type),
+            gpu_device_id=config.get("gpu_device_id", self.gpu_device_id),
         )
 
     def _make_student(self) -> StudentModel:
-        return StudentModel(model_type=self.student_model_type, random_state=self.random_state)
+        return StudentModel(
+            model_type=self.student_model_type,
+            random_state=self.random_state,
+            device_type=self.device_type,
+            gpu_device_id=self.gpu_device_id,
+        )
 
     def _predict_teacher_probabilities(self, teacher: TeacherEnsemble, x: pd.DataFrame) -> np.ndarray:
         probabilities = teacher.predict_calibrated(x) if teacher.calibrated else teacher.predict_proba(x)

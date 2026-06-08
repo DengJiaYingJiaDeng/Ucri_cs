@@ -1,6 +1,10 @@
+import warnings
+from importlib.util import find_spec
+
 import numpy as np
 import pandas as pd
 import pytest
+from scipy import sparse
 from sklearn.exceptions import NotFittedError
 
 from src.models.propensity import PropensityModel
@@ -78,6 +82,62 @@ def test_propensity_model_handles_categorical_shared_features(prop_data):
     probas = model.predict_proba(x.head(10))
 
     assert probas.shape == (10,)
+
+
+def test_propensity_model_handles_mixed_type_categorical_values(prop_data):
+    x, accepted = prop_data
+    x = x.copy()
+    x["state"] = ["CA", 1.0, np.nan, "TX"] * (len(x) // 4)
+    model = PropensityModel(model_type="logistic")
+
+    model.fit(x, accepted)
+    probas = model.predict_proba(x.head(10))
+
+    assert probas.shape == (10,)
+
+
+def test_propensity_logistic_preprocessor_keeps_high_cardinality_one_hot_sparse():
+    x = pd.DataFrame(
+        {
+            "loan_amount": np.arange(40, dtype=float),
+            "zip_code": [f"zip_{index}" for index in range(40)],
+        }
+    )
+    model = PropensityModel(model_type="logistic")
+
+    transformed = model._build_preprocessor(x).fit_transform(x)
+
+    assert sparse.issparse(transformed)
+
+
+def test_propensity_catboost_preprocessor_uses_low_dimensional_categorical_codes():
+    x = pd.DataFrame(
+        {
+            "loan_amount": np.arange(40, dtype=float),
+            "zip_code": [f"zip_{index}" for index in range(40)],
+        }
+    )
+    model = PropensityModel(model_type="catboost")
+
+    transformed = model._build_preprocessor(x).fit_transform(x)
+
+    assert not sparse.issparse(transformed)
+    assert transformed.shape[1] == 2
+
+
+def test_propensity_lightgbm_predict_silences_pipeline_feature_name_warning(prop_data):
+    if find_spec("lightgbm") is None:
+        pytest.skip("LightGBM is not installed.")
+
+    x, accepted = prop_data
+    model = PropensityModel(model_type="lightgbm")
+    model.fit(x, accepted)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        model.predict_proba(x.head(10))
+
+    assert not any("X does not have valid feature names" in str(warning.message) for warning in caught)
 
 
 def test_compute_weights_uses_clipped_inverse_propensity(prop_data):

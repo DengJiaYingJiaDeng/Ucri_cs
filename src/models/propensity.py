@@ -10,15 +10,27 @@ from sklearn.exceptions import NotFittedError
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, StandardScaler
+
+from src.data.encoding import CategoricalStringifier
+from src.models.device import catboost_device_params, lightgbm_device_params, validate_device_type, validate_gpu_device_id
+from src.models.sklearn_compat import predict_proba_silencing_lightgbm_feature_name_warning
 
 
 class PropensityModel:
     """Approval propensity model e(x)=P(accepted=1|x)."""
 
-    def __init__(self, model_type: str = "logistic", random_state: int = 42):
+    def __init__(
+        self,
+        model_type: str = "logistic",
+        random_state: int = 42,
+        device_type: str = "cpu",
+        gpu_device_id: int = 0,
+    ):
         self.model_type = model_type
         self.random_state = random_state
+        self.device_type = validate_device_type(device_type)
+        self.gpu_device_id = validate_gpu_device_id(gpu_device_id)
         self.model: Pipeline | None = None
         self.backend_: str | None = None
 
@@ -32,21 +44,39 @@ class PropensityModel:
                 ("scaler", StandardScaler()),
             ]
         )
-        categorical_pipeline = Pipeline(
-            steps=[
-                ("imputer", SimpleImputer(strategy="constant", fill_value="missing")),
-                ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
-            ]
-        )
+        if self._use_ordinal_categories():
+            categorical_pipeline = Pipeline(
+                steps=[
+                    ("stringifier", CategoricalStringifier()),
+                    (
+                        "ordinal",
+                        OrdinalEncoder(
+                            handle_unknown="use_encoded_value",
+                            unknown_value=-1,
+                            encoded_missing_value=-1,
+                        ),
+                    ),
+                ]
+            )
+        else:
+            categorical_pipeline = Pipeline(
+                steps=[
+                    ("stringifier", CategoricalStringifier()),
+                    ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=True)),
+                ]
+            )
 
-        preprocessor = ColumnTransformer(
+        return ColumnTransformer(
             transformers=[
                 ("numeric", numeric_pipeline, numeric_columns),
                 ("categorical", categorical_pipeline, categorical_columns),
             ],
             remainder="drop",
+            sparse_threshold=1.0,
         )
-        return preprocessor.set_output(transform="pandas")
+
+    def _use_ordinal_categories(self) -> bool:
+        return self.model_type == "catboost" or (self.model_type == "lightgbm" and find_spec("lightgbm") is None)
 
     def _build_estimator(self):
         if self.model_type == "logistic":
@@ -64,6 +94,7 @@ class PropensityModel:
                     random_state=self.random_state,
                     n_jobs=1,
                     verbose=-1,
+                    **lightgbm_device_params(self.device_type, self.gpu_device_id),
                 )
             self.backend_ = "sklearn_hist_gradient_boosting"
             return HistGradientBoostingClassifier(max_iter=100, max_leaf_nodes=31, random_state=self.random_state)
@@ -79,6 +110,7 @@ class PropensityModel:
                     random_seed=self.random_state,
                     silent=True,
                     allow_writing_files=False,
+                    **catboost_device_params(self.device_type, self.gpu_device_id),
                 )
             self.backend_ = "sklearn_hist_gradient_boosting"
             return HistGradientBoostingClassifier(max_iter=100, max_leaf_nodes=31, random_state=self.random_state)
@@ -106,7 +138,7 @@ class PropensityModel:
         if self.model is None:
             raise NotFittedError("PropensityModel must be fitted before calling predict_proba.")
 
-        probabilities = self.model.predict_proba(pd.DataFrame(x))[:, 1]
+        probabilities = predict_proba_silencing_lightgbm_feature_name_warning(self.model, pd.DataFrame(x))[:, 1]
         return np.clip(probabilities, 0.01, 0.99)
 
     def compute_weights(self, x: pd.DataFrame, eps: float = 0.01) -> np.ndarray:

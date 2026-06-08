@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from src.data.splitter import split_accepted_rejected, time_split
+from src.data.splitter import _parse_split_dates, split_accepted_rejected, time_split
 
 
 @pytest.fixture
@@ -95,6 +95,20 @@ def test_time_split_custom_date_column():
 
     assert len(splits["validation"]) == 1
     assert len(splits["test_normal"]) == 1
+
+
+def test_time_split_supports_lendingclub_month_name_dates():
+    df = pd.DataFrame({"application_date": ["Jan-2015", "Feb-2016"], "loan_amount": [10000, 20000]})
+
+    splits = time_split(df)
+
+    assert len(splits["validation"]) == 1
+    assert len(splits["test_normal"]) == 1
+
+
+def test_parse_split_dates_rejects_unknown_formats():
+    with pytest.raises(ValueError, match="Could not parse date column"):
+        _parse_split_dates(pd.Series(["not-a-date"]), date_col="application_date")
 
 
 def test_time_split_missing_date_column_raises(sample_data):

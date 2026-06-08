@@ -1,6 +1,10 @@
+import warnings
+from importlib.util import find_spec
+
 import numpy as np
 import pandas as pd
 import pytest
+from scipy import sparse
 from sklearn.exceptions import NotFittedError
 
 from src.models.teacher import TeacherEnsemble
@@ -93,6 +97,85 @@ def test_teacher_ensemble_handles_categorical_features(teacher_data):
     preds = ensemble.predict_proba(x.head(20))
 
     assert preds.shape == (20,)
+
+
+def test_teacher_ensemble_handles_mixed_type_categorical_values(teacher_data):
+    x, y = teacher_data
+    x = x.copy()
+    x["state"] = ["CA", 1.0, np.nan, "TX"] * (len(x) // 4)
+    ensemble = TeacherEnsemble(n_models=1, model_types=["mlp"])
+
+    ensemble.fit(x, y)
+    preds = ensemble.predict_proba(x.head(20))
+
+    assert preds.shape == (20,)
+
+
+def test_teacher_lightgbm_preprocessor_keeps_high_cardinality_one_hot_sparse():
+    x = pd.DataFrame(
+        {
+            "loan_amount": np.arange(40, dtype=float),
+            "zip_code": [f"zip_{index}" for index in range(40)],
+        }
+    )
+    ensemble = TeacherEnsemble(n_models=1, model_types=["lightgbm"])
+
+    transformed = ensemble._build_preprocessor(x, "lightgbm").fit_transform(x)
+
+    if find_spec("lightgbm") is not None:
+        assert sparse.issparse(transformed)
+    else:
+        assert not sparse.issparse(transformed)
+        assert transformed.shape[1] == 2
+
+
+def test_teacher_catboost_preprocessor_uses_low_dimensional_categorical_codes():
+    x = pd.DataFrame(
+        {
+            "loan_amount": np.arange(40, dtype=float),
+            "zip_code": [f"zip_{index}" for index in range(40)],
+        }
+    )
+    ensemble = TeacherEnsemble(n_models=1, model_types=["catboost"])
+
+    transformed = ensemble._build_preprocessor(x, "catboost").fit_transform(x)
+
+    assert not sparse.issparse(transformed)
+    assert transformed.shape[1] == 2
+
+
+def test_teacher_ensemble_forwards_gpu_params_to_optional_estimators():
+    if find_spec("lightgbm") is None and find_spec("catboost") is None:
+        pytest.skip("Optional gradient boosting libraries are not installed.")
+
+    ensemble = TeacherEnsemble(n_models=1, model_types=["mlp"], device_type="gpu", gpu_device_id=0)
+
+    if find_spec("lightgbm") is not None:
+        lightgbm_estimator = ensemble._build_estimator("lightgbm", seed=42, pos_weight=1.0)
+        lightgbm_params = lightgbm_estimator.get_params()
+        assert lightgbm_params["device_type"] == "gpu"
+        assert lightgbm_params["gpu_device_id"] == 0
+
+    if find_spec("catboost") is not None:
+        catboost_estimator = ensemble._build_estimator("catboost", seed=42, pos_weight=1.0)
+        catboost_params = catboost_estimator.get_params()
+        assert catboost_params["task_type"] == "GPU"
+        assert catboost_params["devices"] == "0"
+
+
+def test_teacher_lightgbm_predict_silences_pipeline_feature_name_warning(teacher_data):
+    if find_spec("lightgbm") is None:
+        pytest.skip("LightGBM is not installed.")
+
+    x, y = teacher_data
+    ensemble = TeacherEnsemble(n_models=1, model_types=["lightgbm"])
+    ensemble.fit(x, y)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        ensemble.predict_proba(x.head(10))
+
+    assert not any("X does not have valid feature names" in str(warning.message) for warning in caught)
 
 
 def test_pos_weight_is_capped_at_20():

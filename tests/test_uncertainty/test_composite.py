@@ -132,6 +132,25 @@ def test_compute_from_teacher_uses_teacher_and_distance_components():
     assert composite._ref_train_distances is not None
 
 
+def test_compute_from_teacher_samples_reference_distance_distribution():
+    x_train = pd.DataFrame(
+        {
+            "loan_amount": np.linspace(10000, 20000, 20),
+            "dti": np.linspace(10, 30, 20),
+        }
+    )
+    x_test = x_train.head(3).copy()
+    teacher = DummyTeacher(np.array([0.1, 0.5, 0.9]))
+    composite = CompositeUncertainty()
+    composite.REFERENCE_DISTANCE_SAMPLE_SIZE = 5
+
+    result = composite.compute_from_teacher(x_test, x_train, teacher)
+
+    assert result.shape == (len(x_test),)
+    assert composite._ref_train_distances is not None
+    assert len(composite._ref_train_distances) == 5
+
+
 def test_fit_alpha_learns_valid_simplex_weights():
     x_train = pd.DataFrame(
         {

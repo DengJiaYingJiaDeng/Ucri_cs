@@ -11,6 +11,8 @@ SPLIT_RANGES = {
     "test_structural_break": ("2020-01-01", "2020-12-31"),
 }
 
+SUPPORTED_DATE_FORMATS = ("%Y-%m-%d", "%Y-%m", "%b-%Y")
+
 
 def time_split(
     df: pd.DataFrame,
@@ -21,7 +23,7 @@ def time_split(
     if date_col not in df.columns:
         raise KeyError(f"Date column not found: {date_col}")
 
-    parsed_dates = pd.to_datetime(df[date_col], errors="raise")
+    parsed_dates = _parse_split_dates(df[date_col], date_col=date_col)
     splits = {}
     for split_name, (start, end) in SPLIT_RANGES.items():
         if split_name == "test_extended" and not include_extended:
@@ -47,3 +49,24 @@ def split_accepted_rejected(
         }
         for split_name in accepted_splits
     }
+
+
+def _parse_split_dates(series: pd.Series, date_col: str) -> pd.Series:
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return pd.to_datetime(series, errors="raise")
+
+    values = series.astype("string").str.strip()
+    parsed = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+    for date_format in SUPPORTED_DATE_FORMATS:
+        missing = parsed.isna()
+        if not missing.any():
+            break
+        parsed.loc[missing] = pd.to_datetime(values.loc[missing], format=date_format, errors="coerce")
+
+    if parsed.isna().any():
+        examples = values.loc[parsed.isna()].dropna().head(3).tolist()
+        raise ValueError(
+            f"Could not parse date column {date_col!r}. "
+            f"Supported formats are {SUPPORTED_DATE_FORMATS}; examples: {examples}"
+        )
+    return parsed

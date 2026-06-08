@@ -181,6 +181,7 @@ def test_build_shared_features():
     assert "loan_purpose" in result.columns
     assert "zip3" in result.columns
     assert "risk_score" not in result.columns
+    assert "policy_code" not in result.columns
     assert "int_rate" not in result.columns
     assert "grade" not in result.columns
     assert "source" in result.columns
@@ -228,6 +229,7 @@ def test_build_shared_features_input_riskscore():
     result = build_shared_features(accepted, rejected, risk_score_setting="input_riskscore")
 
     assert "risk_score" in result.columns
+    assert "policy_code" not in result.columns
     assert result.loc[result["source"] == "rejected", "risk_score"].tolist() == [680]
 
 

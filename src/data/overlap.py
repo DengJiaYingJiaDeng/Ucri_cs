@@ -183,14 +183,43 @@ def _preprocess_for_distance(X_train: pd.DataFrame, X_test: pd.DataFrame) -> tup
     return np.hstack(matrices_train), np.hstack(matrices_test)
 
 
-def _mean_nearest_distances(query: np.ndarray, reference: np.ndarray, n_neighbors: int, batch_size: int = 512) -> np.ndarray:
+def _mean_nearest_distances(
+    query: np.ndarray,
+    reference: np.ndarray,
+    n_neighbors: int,
+    batch_size: int = 128,
+    feature_batch_size: int = 8,
+) -> np.ndarray:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive.")
+    if feature_batch_size <= 0:
+        raise ValueError("feature_batch_size must be positive.")
+
     results = []
     for start in range(0, len(query), batch_size):
         batch = query[start : start + batch_size]
-        squared = np.square(batch[:, None, :] - reference[None, :, :]).sum(axis=2)
+        squared = _pairwise_squared_distances(batch, reference, feature_batch_size=feature_batch_size)
         nearest = np.partition(squared, n_neighbors - 1, axis=1)[:, :n_neighbors]
         results.append(np.sqrt(nearest).mean(axis=1))
     return np.concatenate(results)
+
+
+def _pairwise_squared_distances(batch: np.ndarray, reference: np.ndarray, feature_batch_size: int = 8) -> np.ndarray:
+    batch = np.asarray(batch, dtype=float)
+    reference = np.asarray(reference, dtype=float)
+    if batch.ndim != 2 or reference.ndim != 2:
+        raise ValueError("batch and reference must be two-dimensional arrays.")
+    if batch.shape[1] != reference.shape[1]:
+        raise ValueError("batch and reference must have the same number of columns.")
+    if feature_batch_size <= 0:
+        raise ValueError("feature_batch_size must be positive.")
+
+    squared_distances = np.zeros((len(batch), len(reference)), dtype=float)
+    for start in range(0, batch.shape[1], feature_batch_size):
+        end = min(start + feature_batch_size, batch.shape[1])
+        difference = batch[:, None, start:end] - reference[None, :, start:end]
+        squared_distances += np.square(difference).sum(axis=2)
+    return squared_distances
 
 
 def _feature_range_mask(

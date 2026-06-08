@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data.overlap import overlap_diagnostics, overlap_filter, overlap_k_sensitivity
+from src.data.overlap import _mean_nearest_distances, overlap_diagnostics, overlap_filter, overlap_k_sensitivity
 
 
 def test_overlap_filter_returns_boolean_mask():
@@ -106,6 +106,24 @@ def test_overlap_k_sensitivity_reports_coverage_for_each_k():
     for entry in result.values():
         assert 0.0 <= entry["coverage"] <= 1.0
         assert entry["n_in_overlap"] + entry["n_out_of_support"] == len(X_test)
+
+
+def test_mean_nearest_distances_matches_direct_broadcast():
+    rng = np.random.default_rng(42)
+    query = rng.normal(size=(7, 11))
+    reference = rng.normal(size=(9, 11))
+    squared = np.square(query[:, None, :] - reference[None, :, :]).sum(axis=2)
+    expected = np.sqrt(np.partition(squared, 2, axis=1)[:, :3]).mean(axis=1)
+
+    result = _mean_nearest_distances(
+        query,
+        reference,
+        n_neighbors=3,
+        batch_size=3,
+        feature_batch_size=2,
+    )
+
+    assert np.allclose(result, expected)
 
 
 def test_overlap_filter_validates_inputs():
