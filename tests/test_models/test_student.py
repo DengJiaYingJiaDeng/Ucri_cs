@@ -8,7 +8,7 @@ import pytest
 from scipy import sparse
 from sklearn.exceptions import NotFittedError
 
-from src.models.student import StudentModel, _soft_bce_grad_hess
+from src.models.student import StudentModel
 from src.models.sklearn_compat import predict_proba_silencing_lightgbm_feature_name_warning
 
 
@@ -40,16 +40,6 @@ def student_data():
     teacher_probs = rng.beta(3, 7, n_rejected)
     weights = rng.uniform(0.05, 1.0, n_rejected)
     return x_labeled, y_labeled, x_rejected, teacher_probs, weights
-
-
-def test_soft_bce_grad_hess_uses_soft_targets():
-    pred = np.array([0.2, 0.7])
-    target = np.array([0.4, 0.6])
-
-    grad, hess = _soft_bce_grad_hess(pred, target)
-
-    assert np.allclose(grad, [-0.2, 0.1])
-    assert np.all(hess > 0)
 
 
 def test_student_fit_supervised_only(student_data):
@@ -84,6 +74,19 @@ def test_student_soft_labels_are_not_thresholded(student_data):
     stored_rejected_targets = model.training_targets_[len(x) :]
     assert np.allclose(stored_rejected_targets, np.clip(teacher_probs, 1e-6, 1 - 1e-6))
     assert not np.all(np.isin(stored_rejected_targets, [0.0, 1.0]))
+
+
+def test_student_soft_targets_expand_to_weighted_binary_bce(student_data):
+    x, _, _, _, _ = student_data
+    model = StudentModel(model_type="logistic")
+    soft_targets = np.array([0.25, 0.8])
+    sample_weights = np.array([2.0, 3.0])
+
+    x_expanded, y_expanded, weights_expanded = model._expand_soft_targets(x.head(2), soft_targets, sample_weights)
+
+    assert len(x_expanded) == 4
+    assert np.array_equal(y_expanded, np.array([1, 1, 0, 0]))
+    assert np.allclose(weights_expanded, np.array([0.5, 2.4, 1.5, 0.6]))
 
 
 def test_student_post_calibration(student_data):

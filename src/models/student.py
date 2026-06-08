@@ -18,18 +18,6 @@ from src.models.device import catboost_device_params, lightgbm_device_params, va
 from src.models.sklearn_compat import predict_proba_silencing_lightgbm_feature_name_warning
 
 
-def _soft_bce_grad_hess(pred: np.ndarray, target: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Gradient and hessian for soft BCE with probability predictions."""
-    probability = np.clip(np.asarray(pred, dtype=float), 1e-10, 1 - 1e-10)
-    target = np.asarray(target, dtype=float)
-    if probability.shape != target.shape:
-        raise ValueError("pred and target must have the same shape.")
-
-    grad = probability - target
-    hess = probability * (1 - probability)
-    return grad, hess
-
-
 class StudentModel:
     """Lightweight student PD model trained on accepted labels and weighted soft pseudo-labels."""
 
@@ -282,6 +270,7 @@ class StudentModel:
         soft_targets: np.ndarray,
         sample_weights: np.ndarray,
     ) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
+        """Represent soft BCE as weighted positive/negative binary rows."""
         positive_weights = sample_weights * soft_targets
         negative_weights = sample_weights * (1.0 - soft_targets)
         x_expanded = pd.concat([x, x], ignore_index=True)

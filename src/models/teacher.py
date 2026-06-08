@@ -8,7 +8,6 @@ from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.exceptions import NotFittedError
 from sklearn.impute import SimpleImputer
-from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, StandardScaler
 
@@ -16,6 +15,7 @@ from src.calibration.temperature import apply_temperature, fit_temperature
 from src.data.encoding import CategoricalStringifier
 from src.models.device import catboost_device_params, lightgbm_device_params, validate_device_type, validate_gpu_device_id
 from src.models.sklearn_compat import predict_proba_silencing_lightgbm_feature_name_warning
+from src.models.torch_mlp import TorchMLPClassifier
 
 
 class TeacherEnsemble:
@@ -95,7 +95,7 @@ class TeacherEnsemble:
         )
 
     def _use_ordinal_categories(self, model_type: str) -> bool:
-        return model_type == "catboost" or (model_type == "lightgbm" and find_spec("lightgbm") is None)
+        return model_type in {"catboost", "mlp"} or (model_type == "lightgbm" and find_spec("lightgbm") is None)
 
     def _build_estimator(self, model_type: str, seed: int, pos_weight: float):
         if model_type == "lightgbm":
@@ -129,11 +129,14 @@ class TeacherEnsemble:
             return HistGradientBoostingClassifier(max_iter=100, max_leaf_nodes=31, random_state=seed)
 
         if model_type == "mlp":
-            return LogisticRegression(
-                C=1.0,
-                max_iter=2000,
+            return TorchMLPClassifier(
+                hidden_layer_sizes=(64, 32),
+                max_iter=25,
+                learning_rate=1e-3,
                 random_state=seed,
-                solver="liblinear",
+                pos_weight=pos_weight,
+                device_type=self.device_type,
+                gpu_device_id=self.gpu_device_id,
             )
 
         raise ValueError(f"Unknown teacher model type: {model_type}")

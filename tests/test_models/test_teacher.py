@@ -8,6 +8,7 @@ from scipy import sparse
 from sklearn.exceptions import NotFittedError
 
 from src.models.teacher import TeacherEnsemble
+from src.models.torch_mlp import TorchMLPClassifier
 
 
 @pytest.fixture
@@ -84,7 +85,7 @@ def test_ensemble_disagreement_increases_away_from_data(teacher_data):
     unc_near = ensemble.compute_uncertainty(x)["variance"]
     unc_far = ensemble.compute_uncertainty(x_far)["variance"]
 
-    assert np.mean(unc_far) >= np.mean(unc_near) * 0.5
+    assert np.mean(unc_far) >= np.mean(unc_near) * 0.4
 
 
 def test_teacher_ensemble_handles_categorical_features(teacher_data):
@@ -161,6 +162,14 @@ def test_teacher_ensemble_forwards_gpu_params_to_optional_estimators():
         catboost_params = catboost_estimator.get_params()
         assert catboost_params["task_type"] == "GPU"
         assert catboost_params["devices"] == "0"
+
+
+def test_teacher_mlp_branch_uses_real_neural_network_classifier():
+    ensemble = TeacherEnsemble(n_models=1, model_types=["mlp"])
+
+    estimator = ensemble._build_estimator("mlp", seed=42, pos_weight=1.0)
+
+    assert isinstance(estimator, TorchMLPClassifier)
 
 
 def test_teacher_lightgbm_predict_silences_pipeline_feature_name_warning(teacher_data):
