@@ -8,6 +8,8 @@ from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.neural_network import MLPClassifier
 
+from src.models.device import catboost_device_params, lightgbm_device_params
+
 
 def _build_gradient_boosting_fallback(random_state: int = 42) -> BaseEstimator:
     return GradientBoostingClassifier(
@@ -46,7 +48,7 @@ def build_xgboost(random_state: int = 42) -> BaseEstimator:
     )
 
 
-def build_lightgbm(random_state: int = 42) -> BaseEstimator:
+def build_lightgbm(random_state: int = 42, device_type: str = "cpu", gpu_device_id: int = 0) -> BaseEstimator:
     if find_spec("lightgbm") is None:
         return _build_gradient_boosting_fallback(random_state)
 
@@ -58,10 +60,11 @@ def build_lightgbm(random_state: int = 42) -> BaseEstimator:
         random_state=random_state,
         n_jobs=1,
         verbose=-1,
+        **lightgbm_device_params(device_type, gpu_device_id),
     )
 
 
-def build_catboost(random_state: int = 42) -> BaseEstimator:
+def build_catboost(random_state: int = 42, device_type: str = "cpu", gpu_device_id: int = 0) -> BaseEstimator:
     if find_spec("catboost") is None:
         return _build_gradient_boosting_fallback(random_state)
 
@@ -73,6 +76,7 @@ def build_catboost(random_state: int = 42) -> BaseEstimator:
         random_seed=random_state,
         silent=True,
         allow_writing_files=False,
+        **catboost_device_params(device_type, gpu_device_id),
     )
 
 
