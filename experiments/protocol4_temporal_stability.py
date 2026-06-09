@@ -7,8 +7,7 @@ import numpy as np
 import pandas as pd
 
 from src.data.leakage_audit import audit_features
-from src.data.loader import load_accepted
-from src.data.preprocess import build_accepted_rich_features, construct_default_label, label_maturity_filter
+from src.data.processed_cache import DEFAULT_ACCEPTED_RICH_CACHE_PATH, load_or_build_accepted_labeled_rich
 from src.data.splitter import time_split
 from src.evaluation.protocol import run_protocol_4
 
@@ -20,17 +19,17 @@ def main(
     approval_pd_threshold: float = 0.5,
     device_type: str = "cpu",
     gpu_device_id: int = 0,
+    cache_path: str | None = str(DEFAULT_ACCEPTED_RICH_CACHE_PATH),
+    refresh_cache: bool = False,
     random_state: int = 42,
 ) -> pd.DataFrame:
     """Run Protocol 4 temporal-stability evaluation and write a metrics CSV."""
-    accepted = load_accepted(data_path)
-    labeled = construct_default_label(label_maturity_filter(accepted)).dropna(subset=["default_label"]).copy()
-
-    modeling_frame = build_accepted_rich_features(labeled)
-    if "issue_d" not in modeling_frame.columns:
-        raise KeyError("Accepted data must contain issue_d for Protocol 4 time split.")
-    modeling_frame["application_date"] = modeling_frame["issue_d"]
-    modeling_frame["default_label"] = labeled["default_label"].astype(int).to_numpy()
+    modeling_frame, cache_hit = load_or_build_accepted_labeled_rich(
+        data_path,
+        cache_path=cache_path,
+        refresh_cache=refresh_cache,
+    )
+    print(f"Protocol 4 data source: {'processed cache' if cache_hit else 'raw CSV'}")
 
     splits = time_split(modeling_frame, date_col="application_date")
     train = splits["train"]
@@ -117,6 +116,8 @@ def _cli() -> None:
     parser.add_argument("--approval-pd-threshold", type=float, default=0.5)
     parser.add_argument("--device-type", choices=["cpu", "gpu"], default="cpu")
     parser.add_argument("--gpu-device-id", type=int, default=0)
+    parser.add_argument("--cache-path", default=str(DEFAULT_ACCEPTED_RICH_CACHE_PATH))
+    parser.add_argument("--refresh-cache", action="store_true")
     parser.add_argument("--random-state", type=int, default=42)
     args = parser.parse_args()
 
@@ -127,6 +128,8 @@ def _cli() -> None:
         approval_pd_threshold=args.approval_pd_threshold,
         device_type=args.device_type,
         gpu_device_id=args.gpu_device_id,
+        cache_path=args.cache_path,
+        refresh_cache=args.refresh_cache,
         random_state=args.random_state,
     )
 

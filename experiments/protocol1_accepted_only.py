@@ -7,8 +7,7 @@ import numpy as np
 import pandas as pd
 
 from src.data.leakage_audit import audit_features
-from src.data.loader import load_accepted
-from src.data.preprocess import build_accepted_rich_features, construct_default_label, label_maturity_filter
+from src.data.processed_cache import DEFAULT_ACCEPTED_RICH_CACHE_PATH, load_or_build_accepted_labeled_rich
 from src.data.splitter import time_split
 from src.evaluation.protocol import run_protocol_1
 
@@ -17,17 +16,17 @@ def main(
     data_path: str,
     output_path: str,
     model_names: list[str] | None = None,
+    cache_path: str | None = str(DEFAULT_ACCEPTED_RICH_CACHE_PATH),
+    refresh_cache: bool = False,
     random_state: int = 42,
 ) -> pd.DataFrame:
     """Run accepted-only out-of-time Protocol 1 and write a metrics CSV."""
-    accepted = load_accepted(data_path)
-    labeled = construct_default_label(label_maturity_filter(accepted)).dropna(subset=["default_label"]).copy()
-
-    modeling_frame = build_accepted_rich_features(labeled)
-    if "issue_d" not in modeling_frame.columns:
-        raise KeyError("Accepted data must contain issue_d for Protocol 1 time split.")
-    modeling_frame["application_date"] = modeling_frame["issue_d"]
-    modeling_frame["default_label"] = labeled["default_label"].astype(int).to_numpy()
+    modeling_frame, cache_hit = load_or_build_accepted_labeled_rich(
+        data_path,
+        cache_path=cache_path,
+        refresh_cache=refresh_cache,
+    )
+    print(f"Protocol 1 data source: {'processed cache' if cache_hit else 'raw CSV'}")
 
     splits = time_split(modeling_frame, date_col="application_date")
     train = splits["train"]
@@ -100,6 +99,8 @@ def _cli() -> None:
     parser.add_argument("data_path")
     parser.add_argument("output_path")
     parser.add_argument("--models", default=None, help="Comma-separated model names, e.g. LogisticRegression,LightGBM")
+    parser.add_argument("--cache-path", default=str(DEFAULT_ACCEPTED_RICH_CACHE_PATH))
+    parser.add_argument("--refresh-cache", action="store_true")
     parser.add_argument("--random-state", type=int, default=42)
     args = parser.parse_args()
 
@@ -107,6 +108,8 @@ def _cli() -> None:
         data_path=args.data_path,
         output_path=args.output_path,
         model_names=_parse_model_names(args.models),
+        cache_path=args.cache_path,
+        refresh_cache=args.refresh_cache,
         random_state=args.random_state,
     )
 

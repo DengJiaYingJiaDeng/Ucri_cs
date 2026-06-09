@@ -41,6 +41,42 @@ def test_optimizer_outputs_manual_review():
     assert "manual_review" in decisions
 
 
+def test_optimizer_matches_bruteforce_threshold_search_with_unique_scores():
+    y_true = np.array([0, 1, 0, 0, 1, 0, 1, 0])
+    y_pred = np.array([0.03, 0.11, 0.15, 0.22, 0.31, 0.33, 0.62, 0.80])
+    optimizer = DecisionThresholdOptimizer(target_bad_rate=0.25, min_approval_rate=0.25)
+
+    thresholds = optimizer.optimize(y_true, y_pred)
+    expected_theta = _bruteforce_theta_approve(y_true, y_pred, target_bad_rate=0.25, min_approval_rate=0.25)
+
+    assert thresholds.theta_approve == pytest.approx(expected_theta)
+
+
+def test_optimizer_prefers_least_bad_rate_violation_when_constraints_are_infeasible():
+    y_true = np.array([0, 0, 1, 1, 1])
+    y_pred = np.array([0.05, 0.10, 0.20, 0.40, 0.90])
+    optimizer = DecisionThresholdOptimizer(target_bad_rate=0.10, min_approval_rate=0.80)
+
+    thresholds = optimizer.optimize(y_true, y_pred)
+    decisions = optimizer.apply(y_pred, thresholds)
+
+    approved = decisions == "approve"
+    assert thresholds.theta_approve == pytest.approx(0.40)
+    assert approved.mean() == pytest.approx(0.80)
+    assert y_true[approved].mean() == pytest.approx(0.50)
+
+
+def test_optimizer_handles_large_validation_arrays_without_expanding_nested_scans():
+    rng = np.random.default_rng(42)
+    y_pred = rng.uniform(0.01, 0.99, 50_000)
+    y_true = rng.binomial(1, y_pred)
+    optimizer = DecisionThresholdOptimizer(target_bad_rate=0.12, min_approval_rate=0.30)
+
+    thresholds = optimizer.optimize(y_true, y_pred)
+
+    assert 0 <= thresholds.theta_approve <= thresholds.theta_reject <= 1
+
+
 def test_uncertainty_blocks_approval_and_routes_high_uncertainty_to_review():
     y_pred = np.array([0.05, 0.06, 0.85, 0.30])
     uncertainty = np.array([0.1, 0.9, 0.1, 0.95])
@@ -78,3 +114,46 @@ def test_optimizer_rejects_invalid_inputs():
 
     with pytest.raises(ValueError, match="target_bad_rate"):
         DecisionThresholdOptimizer(target_bad_rate=1.5)
+
+
+def _bruteforce_theta_approve(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    target_bad_rate: float,
+    min_approval_rate: float,
+) -> float:
+    candidates = np.unique(y_pred)
+    best_theta = float(np.quantile(y_pred, min(max(min_approval_rate, 0.0), 1.0)))
+    best_key = None
+
+    for theta in candidates:
+        approved = y_pred <= theta
+        approval_rate = float(approved.mean())
+        if approved.sum() == 0 or approval_rate < min_approval_rate:
+            continue
+
+        realized_bad_rate = float(y_true[approved].mean())
+        feasible = int(realized_bad_rate <= target_bad_rate)
+        violation = max(0.0, realized_bad_rate - target_bad_rate)
+        key = (feasible, approval_rate, -violation)
+        if best_key is None or key > best_key:
+            best_key = key
+            best_theta = float(theta)
+
+    if best_key is not None and best_key[0] == 1:
+        return best_theta
+
+    best_violation = float("inf")
+    best_approval = -1.0
+    for theta in candidates:
+        approved = y_pred <= theta
+        approval_rate = float(approved.mean())
+        if approved.sum() == 0 or approval_rate < min_approval_rate:
+            continue
+        realized_bad_rate = float(y_true[approved].mean())
+        violation = max(0.0, realized_bad_rate - target_bad_rate)
+        if violation < best_violation or (np.isclose(violation, best_violation) and approval_rate > best_approval):
+            best_violation = violation
+            best_approval = approval_rate
+            best_theta = float(theta)
+    return best_theta

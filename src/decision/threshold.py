@@ -45,27 +45,20 @@ class DecisionThresholdOptimizer:
 
     def optimize(self, y_true: np.ndarray, y_pred: np.ndarray) -> DecisionThresholds:
         y_true, y_pred = self._validate_binary_inputs(y_true, y_pred)
-        candidates = self._candidate_thresholds(y_pred)
-        best_theta = float(np.quantile(y_pred, min(max(self.min_approval_rate, 0.0), 1.0)))
-        best_key: tuple[int, float, float] | None = None
+        thresholds, approval_rates, bad_rates = self._threshold_summaries(y_true, y_pred)
+        eligible = approval_rates >= self.min_approval_rate
+        feasible = eligible & (bad_rates <= self.target_bad_rate)
 
-        for theta in candidates:
-            approved = y_pred <= theta
-            approval_rate = float(approved.mean())
-            if approved.sum() == 0 or approval_rate < self.min_approval_rate:
-                continue
-
-            realized_bad_rate = float(y_true[approved].mean())
-            feasible = int(realized_bad_rate <= self.target_bad_rate)
-            violation = max(0.0, realized_bad_rate - self.target_bad_rate)
-            # Prefer feasible thresholds, then higher approval, then smaller violation.
-            key = (feasible, approval_rate, -violation)
-            if best_key is None or key > best_key:
-                best_key = key
-                best_theta = float(theta)
-
-        if best_key is None:
-            best_theta = self._least_violating_threshold(y_true, y_pred, candidates)
+        if feasible.any():
+            best_theta = float(thresholds[np.flatnonzero(feasible)[-1]])
+        elif eligible.any():
+            best_theta = self._least_violating_threshold(
+                thresholds[eligible],
+                approval_rates[eligible],
+                bad_rates[eligible],
+            )
+        else:
+            best_theta = self._least_violating_threshold(thresholds, approval_rates, bad_rates)
 
         theta_reject = max(best_theta, float(np.quantile(y_pred, 0.75)), best_theta * 1.5)
         theta_reject = float(np.clip(theta_reject, best_theta, 1.0))
@@ -135,22 +128,31 @@ class DecisionThresholdOptimizer:
         candidates = np.unique(np.concatenate([y_pred, percentiles, np.array([0.0, 1.0])]))
         return np.sort(np.clip(candidates, 0.0, 1.0))
 
-    def _least_violating_threshold(self, y_true: np.ndarray, y_pred: np.ndarray, candidates: np.ndarray) -> float:
-        best_theta = float(candidates[0])
-        best_violation = float("inf")
-        best_approval = -1.0
-        for theta in candidates:
-            approved = y_pred <= theta
-            if approved.sum() == 0:
-                continue
-            realized_bad_rate = float(y_true[approved].mean())
-            violation = max(0.0, realized_bad_rate - self.target_bad_rate)
-            approval_rate = float(approved.mean())
-            if violation < best_violation or (np.isclose(violation, best_violation) and approval_rate > best_approval):
-                best_violation = violation
-                best_approval = approval_rate
-                best_theta = float(theta)
-        return best_theta
+    def _threshold_summaries(self, y_true: np.ndarray, y_pred: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        order = np.argsort(y_pred, kind="mergesort")
+        sorted_pred = y_pred[order]
+        sorted_true = y_true[order]
+        last_indices = np.flatnonzero(np.r_[sorted_pred[1:] != sorted_pred[:-1], True])
+
+        thresholds = sorted_pred[last_indices]
+        approved_counts = last_indices + 1
+        bad_counts = np.cumsum(sorted_true)[last_indices]
+        approval_rates = approved_counts / len(sorted_pred)
+        bad_rates = bad_counts / approved_counts
+        return thresholds, approval_rates, bad_rates
+
+    def _least_violating_threshold(
+        self,
+        thresholds: np.ndarray,
+        approval_rates: np.ndarray,
+        bad_rates: np.ndarray,
+    ) -> float:
+        violations = np.maximum(0.0, bad_rates - self.target_bad_rate)
+        best_violation = np.min(violations)
+        tied = np.isclose(violations, best_violation)
+        tied_indices = np.flatnonzero(tied)
+        best_index = tied_indices[np.argmax(approval_rates[tied_indices])]
+        return float(thresholds[best_index])
 
     def _coerce_thresholds(self, thresholds: DecisionThresholds | dict[str, float]) -> DecisionThresholds:
         if isinstance(thresholds, DecisionThresholds):

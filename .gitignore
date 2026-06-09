@@ -1,5 +1,6 @@
 *.csv
 data/raw/
+data/processed/
 outputs/
 catboost_info/
 

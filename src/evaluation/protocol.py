@@ -6,6 +6,13 @@ import numpy as np
 import pandas as pd
 
 from src.baselines.traditional import TRADITIONAL_BASELINES
+from src.decision.profit import (
+    compute_expected_profit,
+    compute_oracle_profit,
+    compute_oracle_profit_ratio,
+    compute_random_profit,
+)
+from src.decision.threshold import DecisionThresholdOptimizer
 from src.evaluation.metrics import compute_all_metrics, compute_brier, compute_ece, compute_ece_equal_width, compute_psi
 from src.models.device import validate_device_type, validate_gpu_device_id
 
@@ -17,6 +24,9 @@ PROTOCOL4_PERIOD_TYPES = {
     "test_structural_break": "structural_break_stress",
 }
 PROTOCOL4_MAIN_PERIODS = ("test_normal", "test_extended")
+PROTOCOL5_TARGET_BAD_RATES = (0.05, 0.08, 0.10, 0.12)
+PROTOCOL5_MIN_APPROVAL_RATES = (0.20, 0.30, 0.40, 0.50)
+PROTOCOL5_LGD_VALUES = (0.20, 0.35, 0.45, 0.60, 0.75, 0.90)
 
 
 @dataclass
@@ -129,6 +139,132 @@ def run_protocol_4(
     return pd.DataFrame(rows)
 
 
+def run_protocol_5(
+    X_train: pd.DataFrame,
+    y_train: np.ndarray,
+    X_validation: pd.DataFrame,
+    y_validation: np.ndarray,
+    X_test: pd.DataFrame,
+    y_test: np.ndarray,
+    loan_amounts_test: np.ndarray,
+    model_names: list[str] | None = None,
+    target_bad_rates: list[float] | None = None,
+    min_approval_rates: list[float] | None = None,
+    lgd_values: list[float] | None = None,
+    interest_rate: float = 0.10,
+    funding_cost: float = 0.04,
+    servicing_cost: float = 0.0,
+    prepayment_haircut: float = 1.0,
+    term_years: float = 3.0,
+    device_type: str = "cpu",
+    gpu_device_id: int = 0,
+    random_state: int = 42,
+    verbose: bool = False,
+) -> pd.DataFrame:
+    """Run Protocol 5: decision-aware approval simulation."""
+    x_train, y_train = _validate_feature_label_pair("train", X_train, y_train)
+    x_validation, y_validation = _validate_feature_label_pair("validation", X_validation, y_validation)
+    x_test, y_test = _validate_feature_label_pair("test", X_test, y_test)
+    x_validation = x_validation.reindex(columns=x_train.columns)
+    x_test = x_test.reindex(columns=x_train.columns)
+    loan_amounts_test = _validate_loan_amounts(loan_amounts_test, expected_length=len(x_test))
+
+    selected_models = model_names or ["LogisticRegression", "LightGBM", "CatBoost"]
+    _validate_model_names(selected_models)
+    target_bad_rates = _validate_probability_grid(
+        "target_bad_rates",
+        target_bad_rates or list(PROTOCOL5_TARGET_BAD_RATES),
+    )
+    min_approval_rates = _validate_probability_grid(
+        "min_approval_rates",
+        min_approval_rates or list(PROTOCOL5_MIN_APPROVAL_RATES),
+    )
+    lgd_values = _validate_probability_grid("lgd_values", lgd_values or list(PROTOCOL5_LGD_VALUES))
+    validated_device = validate_device_type(device_type)
+    validated_gpu_device_id = validate_gpu_device_id(gpu_device_id)
+
+    rows: list[dict[str, object]] = []
+    for model_name in selected_models:
+        if verbose:
+            print(f"Protocol 5 fitting {model_name}...", flush=True)
+        model = _build_protocol_model(model_name, random_state, validated_device, validated_gpu_device_id)
+        model.fit(x_train, y_train)
+        if verbose:
+            print(f"Protocol 5 predicting {model_name}...", flush=True)
+        validation_predictions = _predict_positive_probability(model, x_validation)
+        test_predictions = _predict_positive_probability(model, x_test)
+        model_metrics = compute_all_metrics(y_test, test_predictions)
+        if verbose:
+            print(f"Protocol 5 optimizing decision grid for {model_name}...", flush=True)
+
+        for target_bad_rate in target_bad_rates:
+            for min_approval_rate in min_approval_rates:
+                optimizer = DecisionThresholdOptimizer(
+                    target_bad_rate=target_bad_rate,
+                    min_approval_rate=min_approval_rate,
+                )
+                thresholds = optimizer.optimize(y_validation, validation_predictions)
+                validation_decisions = optimizer.apply(validation_predictions, thresholds)
+                test_decisions = optimizer.apply(test_predictions, thresholds)
+                approved = test_decisions == "approve"
+                validation_approved = validation_decisions == "approve"
+                validation_approval_rate = float(validation_approved.mean())
+                validation_realized_bad_rate = _safe_bad_rate(y_validation, validation_approved)
+                validation_constraint_feasible = (
+                    validation_approval_rate >= float(min_approval_rate)
+                    and validation_realized_bad_rate <= float(target_bad_rate)
+                )
+                base_row = {
+                    "protocol": "Protocol5",
+                    "model": model_name,
+                    "evaluation_population": "future_accepted_test",
+                    "n_train": int(len(x_train)),
+                    "n_validation": int(len(x_validation)),
+                    "n_test": int(len(x_test)),
+                    "target_bad_rate": float(target_bad_rate),
+                    "min_approval_rate": float(min_approval_rate),
+                    "theta_approve": thresholds.theta_approve,
+                    "theta_reject": thresholds.theta_reject,
+                    "validation_approval_rate": validation_approval_rate,
+                    "validation_realized_bad_rate": validation_realized_bad_rate,
+                    "validation_constraint_feasible": bool(validation_constraint_feasible),
+                    "approval_rate": float(approved.mean()),
+                    "reject_rate": float((test_decisions == "reject").mean()),
+                    "manual_review_rate": float((test_decisions == "manual_review").mean()),
+                    "realized_bad_rate": _safe_bad_rate(y_test, approved),
+                    "average_calibrated_pd": float(np.mean(test_predictions)),
+                    "approved_average_calibrated_pd": _safe_prediction_mean(test_predictions, approved),
+                    "ks_at_approval_boundary": _ks_at_approval_boundary(y_test, test_predictions, thresholds.theta_approve),
+                    "AUROC": model_metrics["AUROC"],
+                    "PR-AUC": model_metrics["PR-AUC"],
+                    "KS": model_metrics["KS"],
+                    "Brier": model_metrics["Brier"],
+                    "ECE": model_metrics["ECE"],
+                }
+                for lgd in lgd_values:
+                    rows.append(
+                        {
+                            **base_row,
+                            "lgd": float(lgd),
+                            **_protocol5_profit_summary(
+                                y_true=y_test,
+                                y_pred=test_predictions,
+                                approved=approved,
+                                loan_amounts=loan_amounts_test,
+                                lgd=lgd,
+                                interest_rate=interest_rate,
+                                funding_cost=funding_cost,
+                                servicing_cost=servicing_cost,
+                                prepayment_haircut=prepayment_haircut,
+                                term_years=term_years,
+                                random_state=random_state,
+                            ),
+                        }
+                    )
+
+    return pd.DataFrame(rows)
+
+
 def _validate_feature_label_pair(name: str, X: pd.DataFrame, y: np.ndarray) -> tuple[pd.DataFrame, np.ndarray]:
     x = pd.DataFrame(X).copy().reset_index(drop=True)
     labels = np.asarray(y)
@@ -153,6 +289,104 @@ def _validate_protocol4_periods(periods: dict[str, tuple[pd.DataFrame, np.ndarra
     X_validation, y_validation = periods["validation"]
     if len(pd.DataFrame(X_validation)) == 0 or len(np.asarray(y_validation)) == 0:
         raise ValueError("Protocol 4 validation period must not be empty.")
+
+
+def _protocol5_profit_summary(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    approved: np.ndarray,
+    loan_amounts: np.ndarray,
+    lgd: float,
+    interest_rate: float,
+    funding_cost: float,
+    servicing_cost: float,
+    prepayment_haircut: float,
+    term_years: float,
+    random_state: int,
+) -> dict[str, float]:
+    profit_kwargs = {
+        "lgd": lgd,
+        "interest_rate": interest_rate,
+        "funding_cost": funding_cost,
+        "servicing_cost": servicing_cost,
+        "prepayment_haircut": prepayment_haircut,
+        "term_years": term_years,
+    }
+    model_profit = compute_expected_profit(y_pred, y_true, approved, loan_amounts, **profit_kwargs)
+    oracle_profit = compute_oracle_profit(y_pred, y_true, loan_amounts, **profit_kwargs)
+    random_profit = compute_random_profit(
+        y_true,
+        loan_amounts,
+        approval_rate=float(approved.mean()),
+        random_state=random_state,
+        **profit_kwargs,
+    )
+    return {
+        "expected_profit": model_profit["total_profit"],
+        "profit_per_loan": model_profit["profit_per_loan"],
+        "oracle_profit": oracle_profit["total_profit"],
+        "random_profit": random_profit["total_profit"],
+        "oracle_profit_gap": float(oracle_profit["total_profit"] - model_profit["total_profit"]),
+        "oracle_profit_ratio": compute_oracle_profit_ratio(
+            model_profit["total_profit"],
+            oracle_profit["total_profit"],
+            random_profit["total_profit"],
+        ),
+    }
+
+
+def _validate_loan_amounts(values: np.ndarray, expected_length: int) -> np.ndarray:
+    amounts = np.asarray(values, dtype=float)
+    if amounts.ndim != 1:
+        raise ValueError("loan_amounts_test must be a one-dimensional array.")
+    if len(amounts) != expected_length:
+        raise ValueError("loan_amounts_test and X_test must have the same length.")
+    if len(amounts) == 0:
+        raise ValueError("loan_amounts_test must not be empty.")
+    if not np.all(np.isfinite(amounts)) or np.any(amounts < 0):
+        raise ValueError("loan_amounts_test must contain non-negative finite values.")
+    return amounts
+
+
+def _validate_probability_grid(name: str, values: list[float]) -> list[float]:
+    if not values:
+        raise ValueError(f"{name} must not be empty.")
+    result = []
+    for value in values:
+        value = float(value)
+        if not np.isfinite(value) or value < 0 or value > 1:
+            raise ValueError(f"{name} values must be in [0, 1].")
+        result.append(value)
+    return result
+
+
+def _safe_bad_rate(y_true: np.ndarray, mask: np.ndarray) -> float:
+    labels = np.asarray(y_true)
+    mask = np.asarray(mask, dtype=bool)
+    if not mask.any():
+        return float("nan")
+    return float(labels[mask].mean())
+
+
+def _safe_prediction_mean(y_pred: np.ndarray, mask: np.ndarray) -> float:
+    predictions = np.asarray(y_pred, dtype=float)
+    mask = np.asarray(mask, dtype=bool)
+    if not mask.any():
+        return float("nan")
+    return float(predictions[mask].mean())
+
+
+def _ks_at_approval_boundary(y_true: np.ndarray, y_pred: np.ndarray, threshold: float) -> float:
+    labels = np.asarray(y_true)
+    predictions = np.asarray(y_pred, dtype=float)
+    good = labels == 0
+    bad = labels == 1
+    if not good.any() or not bad.any():
+        return float("nan")
+    approved = predictions <= float(threshold)
+    good_approval_rate = float(approved[good].mean())
+    bad_approval_rate = float(approved[bad].mean())
+    return float(abs(good_approval_rate - bad_approval_rate))
 
 
 def _build_protocol_model(

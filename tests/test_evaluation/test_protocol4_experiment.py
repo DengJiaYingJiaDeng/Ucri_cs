@@ -97,16 +97,19 @@ def test_run_protocol_4_reports_period_stability_metrics():
 def test_protocol4_main_writes_metrics_csv_and_skips_missing_structural_break(tmp_path):
     data_path = make_raw_temporal_lendingclub_file(tmp_path)
     output_path = tmp_path / "protocol4_metrics.csv"
+    cache_path = tmp_path / "accepted_labeled_rich.pkl"
 
     result = main(
         str(data_path),
         str(output_path),
         model_names=["LogisticRegression"],
+        cache_path=str(cache_path),
         random_state=7,
     )
 
     saved = pd.read_csv(output_path)
     assert output_path.exists()
+    assert cache_path.exists()
     assert saved["period"].tolist() == ["validation", "test_normal", "test_extended", "test_structural_break"]
     assert result.loc[result["period"].eq("test_structural_break"), "skip_reason"].iloc[0] == "empty_period"
     assert {"AUROC", "PR-AUC", "Brier", "ECE", "score_psi_vs_train", "approval_rate"}.issubset(saved.columns)
