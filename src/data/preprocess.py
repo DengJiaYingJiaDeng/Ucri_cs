@@ -172,6 +172,7 @@ def build_accepted_rich_features(accepted: pd.DataFrame) -> pd.DataFrame:
         "dti",
         "emp_length",
         "addr_state",
+        "zip_code",
         "purpose",
         "home_ownership",
         "annual_inc",

@@ -272,6 +272,7 @@ def test_build_accepted_rich_features():
             "total_acc": [20],
             "issue_d": ["2013-06"],
             "term": [36],
+            "zip_code": ["945xx"],
             "int_rate": [10.5],
             "installment": [325.0],
             "grade": ["B"],
@@ -285,6 +286,7 @@ def test_build_accepted_rich_features():
 
     assert "fico_avg" in result.columns
     assert result["fico_avg"].iloc[0] == 682.0
+    assert "zip_code" in result.columns
     assert "grade" in result.columns
     assert "int_rate" in result.columns
     assert "loan_status" not in result.columns
