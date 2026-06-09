@@ -73,7 +73,10 @@ def test_predict_calibrated_before_calibration_returns_mean_prediction(teacher_d
 
     ensemble.fit(x, y)
 
-    assert np.allclose(ensemble.predict_calibrated(x), ensemble.predict_proba(x))
+    with pytest.warns(UserWarning, match="before calibrate"):
+        calibrated = ensemble.predict_calibrated(x)
+
+    assert np.allclose(calibrated, ensemble.predict_proba(x))
 
 
 def test_ensemble_disagreement_increases_away_from_data(teacher_data):

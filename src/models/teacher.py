@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from importlib.util import find_spec
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -205,8 +206,15 @@ class TeacherEnsemble:
         return self
 
     def predict_calibrated(self, x: pd.DataFrame) -> np.ndarray:
+        """Return calibrated probabilities, or warn and return ensemble means before calibration."""
         probabilities = self.predict_proba(x)
         if not self.calibrated:
+            warnings.warn(
+                "TeacherEnsemble.predict_calibrated was called before calibrate(); "
+                "returning uncalibrated ensemble probabilities.",
+                UserWarning,
+                stacklevel=2,
+            )
             return probabilities
         logits = self._to_logits(probabilities)
         return apply_temperature(logits, self.temperature)

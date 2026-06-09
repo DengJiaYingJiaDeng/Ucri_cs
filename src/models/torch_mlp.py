@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+from importlib.util import find_spec
+
 import numpy as np
 from scipy import sparse
 from scipy.special import expit
 from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.neural_network import MLPClassifier
 
 from src.models.device import validate_device_type, validate_gpu_device_id
 
 
 class TorchMLPClassifier(BaseEstimator, ClassifierMixin):
-    """Small binary MLP classifier with an sklearn-compatible interface."""
+    """Small binary MLP classifier with an sklearn-compatible interface.
+
+    When PyTorch is unavailable, the estimator falls back to sklearn's
+    MLPClassifier so optional neural-network tests and teacher ensembles still
+    run in lightweight environments.
+    """
 
     def __init__(
         self,
@@ -32,10 +40,6 @@ class TorchMLPClassifier(BaseEstimator, ClassifierMixin):
         self.gpu_device_id = gpu_device_id
 
     def fit(self, X, y):
-        import torch
-        from torch import nn
-        from torch.utils.data import DataLoader, TensorDataset
-
         x_array = self._as_float_matrix(X)
         y_array = self._as_binary_targets(y, expected_length=len(x_array))
         if self.max_iter <= 0:
@@ -44,6 +48,14 @@ class TorchMLPClassifier(BaseEstimator, ClassifierMixin):
             raise ValueError("batch_size must be positive.")
 
         self.classes_ = np.array([0, 1])
+        if find_spec("torch") is None:
+            return self._fit_sklearn_fallback(x_array, y_array)
+
+        import torch
+        from torch import nn
+        from torch.utils.data import DataLoader, TensorDataset
+
+        self.backend_ = "torch"
         self.device_ = self._resolve_device(torch)
         self.model_ = self._build_network(nn, x_array.shape[1]).to(self.device_)
 
@@ -78,8 +90,10 @@ class TorchMLPClassifier(BaseEstimator, ClassifierMixin):
         return self
 
     def predict_proba(self, X) -> np.ndarray:
-        if not hasattr(self, "model_"):
+        if not hasattr(self, "backend_"):
             raise ValueError("TorchMLPClassifier must be fitted before predicting.")
+        if self.backend_ == "sklearn":
+            return self._predict_sklearn_fallback_proba(X)
 
         import torch
 
@@ -93,6 +107,30 @@ class TorchMLPClassifier(BaseEstimator, ClassifierMixin):
                 logits = self.model_(batch).detach().cpu().numpy().reshape(-1)
                 probabilities.append(expit(logits))
         positive = np.clip(np.concatenate(probabilities), 0.0, 1.0)
+        return np.column_stack([1.0 - positive, positive])
+
+    def _fit_sklearn_fallback(self, x_array: np.ndarray, y_array: np.ndarray):
+        self.backend_ = "sklearn"
+        self.fallback_model_ = MLPClassifier(
+            hidden_layer_sizes=self.hidden_layer_sizes,
+            max_iter=int(self.max_iter),
+            batch_size=min(int(self.batch_size), len(x_array)),
+            learning_rate_init=float(self.learning_rate),
+            random_state=int(self.random_state),
+            early_stopping=False,
+        )
+        self.fallback_model_.fit(x_array, y_array.astype(int))
+        return self
+
+    def _predict_sklearn_fallback_proba(self, X) -> np.ndarray:
+        probabilities = np.asarray(self.fallback_model_.predict_proba(self._as_float_matrix(X)), dtype=float)
+        if probabilities.shape[1] == 1:
+            positive_class_index = int(self.fallback_model_.classes_[0])
+            positive = np.ones(len(probabilities)) if positive_class_index == 1 else np.zeros(len(probabilities))
+            return np.column_stack([1.0 - positive, positive])
+
+        positive_column = int(np.flatnonzero(self.fallback_model_.classes_ == 1)[0])
+        positive = np.clip(probabilities[:, positive_column], 0.0, 1.0)
         return np.column_stack([1.0 - positive, positive])
 
     def _build_network(self, nn, n_features: int):
